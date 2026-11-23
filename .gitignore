@@ -42,7 +42,7 @@ dist/
 **/fakton/
 **/Docs/
 scripts/
-!samples/Streaik.Gateway.Sample/appsettings.Development.json
+!samples/Streaik.Gateway.Sample/appsettings.Production.json
 
 # Build results
 [Dd]ebug/

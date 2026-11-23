@@ -12,7 +12,11 @@ using Streaik.Providers.OpenRouter;
 using Streaik.Vercel.Security;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.ConfigureKestrel(options => options.ListenLocalhost(5079));
+
+if (builder.Environment.IsDevelopment())
+    builder.WebHost.ConfigureKestrel(options =>
+        options.ListenLocalhost(5079));
+
 builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGladia().AddOpenRouter().AddFireworks()
     .AddDeepSeek().AddGroq().AddTogether().AddCerebras().AddGoogle().AddXai().AddAssemblyAI()
     .AddStreaikHeaderAuth().AddStreaikReferences();
