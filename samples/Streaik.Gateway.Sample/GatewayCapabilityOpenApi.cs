@@ -10,16 +10,16 @@ internal static class GatewayCapabilityOpenApi
 
     private static readonly (string Name, string[] Routes)[] Capabilities =
     [
-        ("Chat & Responses", ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/api/chat"]),
+        ("Chat", ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/api/chat"]),
         ("Decisions", ["/v1/decisions", "/api/decisions"]),
         ("Images", ["/v1/images", "/api/images"]),
         ("Videos", ["/api/videos"]),
         ("Speech", ["/v1/audio/speech", "/api/speech"]),
         ("Transcriptions", ["/v1/audio/transcriptions", "/api/transcriptions"]),
-        ("Realtime & Live", ["/v1/realtime", "/v1/live", "/api/realtime"]),
+        ("Realtime", ["/v1/realtime", "/v1/live", "/api/realtime"]),
         ("Embeddings", ["/v1/embeddings", "/api/embeddings"]),
         ("Rerank", ["/api/rerank"]),
-        ("Model discovery", ["/v1/models"]),
+        ("Discovery", ["/v1/models"]),
         ("Skills", ["/v1/skills", "/v1/skills/providers", "/v1/skills/{providerId}/{skillId}/versions",
             "/v1/skills/{providerId}/{skillId}/content", "/v1/skills/{providerId}/{skillId}/versions/{version}/content"])
     ];
