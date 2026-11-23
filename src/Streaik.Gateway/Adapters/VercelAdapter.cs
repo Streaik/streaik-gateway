@@ -97,8 +97,10 @@ internal static partial class VercelAdapter
         if (options.ValueKind != JsonValueKind.Object) throw new ContractException("Provider-specific chat options must be an object.");
         // Never use extension data to override typed request fields, even when they would be omitted on serialization.
         var reserved = json.GetTypeInfo(typeof(T)).Properties.Select(property => property.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return options.EnumerateObject().Where(property => !reserved.Contains(property.Name))
-            .ToDictionary(property => property.Name, property => property.Value, StringComparer.OrdinalIgnoreCase);
+        var extensions = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var property in options.EnumerateObject())
+            if (!reserved.Contains(property.Name)) extensions[property.Name] = property.Value;
+        return extensions;
     }
 
     private static Dictionary<string, Dictionary<string, object>?> ToolMetadata(string provider, string key, JsonElement data)

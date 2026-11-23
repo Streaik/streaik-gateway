@@ -122,7 +122,11 @@ public sealed class SluisZyphraZeroEntropyTests
         Assert.Equal(8, (int?)request.Body["sampling"]?["top_k"]);
         Assert.Null(request.Body["shouldNotForward"]);
         Assert.Contains("text-delta", output);
-        Assert.Contains("\"zyphra\":{\"region\":\"us\",\"raw\":{\"custom_id\":\"abc\"}}", output);
+        var finish = Assert.Single(output.Split('\n').Where(line => line.StartsWith("data: {", StringComparison.Ordinal))
+            .Select(line => JsonNode.Parse(line[6..])), node => (string?)node?["type"] == "finish");
+        var metadata = finish?["messageMetadata"]?["providerMetadata"]?["zyphra"];
+        Assert.Equal("us", (string?)metadata?["region"]);
+        Assert.Equal("abc", (string?)metadata?["raw"]?["custom_id"]);
     }
 
     [Theory]
