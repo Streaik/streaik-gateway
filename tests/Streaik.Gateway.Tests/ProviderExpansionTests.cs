@@ -69,6 +69,52 @@ public sealed class ProviderExpansionTests
         Assert.Equal("AQID", (string?)result["videos"]![0]!["data"]);
     }
 
+    [Theory]
+    [InlineData("google/")]
+    [InlineData("models/google/")]
+    public async Task Google_compatibility_catalog_ID_starts_and_polls_prompt_only_Omni_video(string upstreamPrefix)
+    {
+        const string nativeModel = "gemini-omni-1.2-flash";
+        const string prompt = "A windmill";
+        await using var host = await FixtureHost.StartAsync(request => (request.Method, request.Path) switch
+        {
+            ("GET", "/v1beta/models?pageSize=1000") => FixtureHost.Json("""{"models":[]}"""),
+            ("GET", "/v1beta/openai/models") => FixtureHost.Json($$"""{"data":[{"id":"{{upstreamPrefix}}{{nativeModel}}"}]}"""),
+            ("GET", "/v1beta/agents?page_size=1000") => FixtureHost.Json("""{"agents":[]}"""),
+            ("POST", "/v1beta/interactions") => StartOmni(request),
+            ("GET", "/v1beta/interactions/omni-fixture") => FixtureHost.Json("""
+                {"status":"completed","model":"gemini-omni-1.2-flash","steps":[{"type":"model_output","content":[{"type":"video","data":"AQID","mime_type":"video/mp4"}]}]}
+                """),
+            _ => throw new InvalidOperationException($"Unexpected Google request: {request.Method} {request.Path}")
+        }, configure: services => services.AddStreaikReferences(), liveProviders: true);
+
+        var key = ("x-google-key", "fixture");
+        using var listed = await host.GetAsync("/v1/models", key);
+        var models = JsonNode.Parse(await GatewayTests.Success(listed))!["data"]!.AsArray();
+        var video = Assert.Single(models, entry => (string?)entry?["type"] == "video")!;
+        var model = (string)video["id"]!;
+        using var created = await host.PostAsync("/api/videos", $$"""{"model":"{{model}}","prompt":"{{prompt}}"}""", key);
+        var operation = (string)JsonNode.Parse(await GatewayTests.Success(created))!["operation"]!;
+        Assert.Equal("google/" + nativeModel, model);
+        Assert.StartsWith("google/", operation);
+
+        using var completed = await host.GetAsync($"/api/videos/{operation}", key);
+        var result = JsonNode.Parse(await GatewayTests.Success(completed))!;
+        Assert.Equal("completed", (string?)result["status"]);
+        Assert.Equal("AQID", (string?)result["videos"]![0]!["data"]);
+
+        static HttpResponseMessage StartOmni(FixtureHost.UpstreamRequest request)
+        {
+            Assert.Equal(nativeModel, (string?)request.Body!["model"]);
+            Assert.Equal("video", (string?)request.Body["response_format"]!["type"]);
+            Assert.True((bool?)request.Body["background"]);
+            var input = Assert.Single(request.Body["input"]!.AsArray())!;
+            Assert.Equal("text", (string?)input["type"]);
+            Assert.Equal(prompt, (string?)input["text"]);
+            return FixtureHost.Json("""{"id":"omni-fixture","status":"in_progress"}""");
+        }
+    }
+
     [Fact]
     public async Task OpenRouter_images_speech_and_transcription_use_existing_gateway_contracts()
     {
