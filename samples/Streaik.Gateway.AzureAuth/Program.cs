@@ -13,6 +13,9 @@ using Streaik.Providers.ImageRouter;
 using Streaik.Providers.OpenAI;
 using Streaik.Providers.OpenRouter;
 using Streaik.Providers.VoyageAI;
+using Streaik.Providers.Sluis;
+using Streaik.Providers.ZeroEntropy;
+using Streaik.Providers.Zyphra;
 using Streaik.Vercel.Security;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -31,7 +34,7 @@ if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string
 }
 builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGladia().AddOpenRouter().AddFireworks()
     .AddDeepSeek().AddGroq().AddTogether().AddCerebras().AddGoogle().AddXai().AddAssemblyAI()
-    .AddCanopyWave().AddDaglo().AddVoyageAI().AddStreaikReferences();
+    .AddCanopyWave().AddDaglo().AddVoyageAI().AddSluis().AddZyphra().AddZeroEntropy().AddStreaikReferences();
 await VaultProviderKeys.LoadAsync(builder);
 
 var app = builder.Build();

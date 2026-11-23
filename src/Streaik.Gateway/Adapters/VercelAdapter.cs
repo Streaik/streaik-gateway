@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Streaik.ChatCompletions.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Streaik.Providers;
 using Streaik.Vercel.Models;
@@ -41,11 +42,13 @@ internal static partial class VercelAdapter
             stream = MessageParts(call, request, messages.StreamMessageAsync(MessagesRequestFrom(call, request), call.Headers, call.Ct));
         else if (call.GetChatBridge() is { } chat)
         {
-            if (request.ProviderMetadata?.ContainsKey(call.ProviderId) == true
+            var nativeOptions = call.Get<INativeChatOptionsProvider>() is not null;
+            if ((!nativeOptions && request.ProviderMetadata?.ContainsKey(call.ProviderId) == true)
                 || request.Messages.SelectMany(message => message.Parts).OfType<ToolInvocationPart>().Any(tool => tool.ProviderExecuted == true))
                 throw new ContractException("Provider-specific Vercel options require a native adapter.");
             var native = ChatCompletionsBridge.Request(MessagesRequestFrom(call, request, viaChat: true), request.MaxOutputTokens);
-            stream = MessageParts(call, request, ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct)));
+            if (nativeOptions) native.AdditionalProperties = NativeOptions<ChatCompletionOptions>(call, request, Web);
+            stream = MessageParts(call, request, ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), nativeOptions));
         }
         else if (call.Get<IImageProvider>() is { } images)
         {
@@ -88,6 +91,16 @@ internal static partial class VercelAdapter
         => request.ProviderMetadata?.TryGetValue(provider, out var value) == true && value.ValueKind == JsonValueKind.Object
             && value.TryGetProperty(key, out var setting) ? setting : null;
 
+    private static Dictionary<string, JsonElement>? NativeOptions<T>(GatewayCall call, ChatRequest request, JsonSerializerOptions json)
+    {
+        if (request.ProviderMetadata?.TryGetValue(call.ProviderId, out var options) != true) return null;
+        if (options.ValueKind != JsonValueKind.Object) throw new ContractException("Provider-specific chat options must be an object.");
+        // Never use extension data to override typed request fields, even when they would be omitted on serialization.
+        var reserved = json.GetTypeInfo(typeof(T)).Properties.Select(property => property.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return options.EnumerateObject().Where(property => !reserved.Contains(property.Name))
+            .ToDictionary(property => property.Name, property => property.Value, StringComparer.OrdinalIgnoreCase);
+    }
+
     private static Dictionary<string, Dictionary<string, object>?> ToolMetadata(string provider, string key, JsonElement data)
         => new(StringComparer.Ordinal) { [provider] = new() { [key] = data } };
 
@@ -123,6 +136,18 @@ internal static partial class VercelAdapter
         var metadata = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         if (additional?.TryGetValue("providerMetadata", out var supplied) == true && supplied.ValueKind == JsonValueKind.Object)
             foreach (var entry in supplied.EnumerateObject()) metadata[entry.Name] = entry.Value;
+        if (additional is not null && call.Get<INativeChatOptionsProvider>() is not null)
+        {
+            var raw = additional.Where(pair => pair.Key is not ("providerMetadata" or "metadata" or "error")).ToDictionary();
+            if (raw.Count != 0)
+            {
+                var scoped = metadata.TryGetValue(provider, out var existing) && existing.ValueKind == JsonValueKind.Object
+                    ? existing.EnumerateObject().ToDictionary(property => property.Name, property => property.Value) : new();
+                scoped.TryAdd("raw", JsonSerializer.SerializeToElement(raw, Web));
+                if (nativeUsage is not null) scoped.TryAdd("usage", JsonSerializer.SerializeToElement(nativeUsage, Web));
+                metadata[provider] = JsonSerializer.SerializeToElement(scoped, Web);
+            }
+        }
         if (nativeUsage is not null && !metadata.ContainsKey(provider))
             metadata[provider] = JsonSerializer.SerializeToElement(new { usage = nativeUsage }, Web);
         return new FinishUIPart { FinishReason = reason, MessageMetadata = new FinishMessageMetadata

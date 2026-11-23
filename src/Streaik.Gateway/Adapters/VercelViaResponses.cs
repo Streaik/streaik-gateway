@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Streaik.Providers;
 using Streaik.Responses;
 using Streaik.Responses.Streaming;
 using Streaik.Vercel.Models;
@@ -110,7 +111,8 @@ internal static partial class VercelAdapter
             Tools = tools.Count == 0 ? null : tools, ToolChoice = request.ToolChoice switch
                 { null => null, "auto" or "required" or "none" => request.ToolChoice, { } name => new { type = "function", name } },
             Reasoning = Option(request, call.ProviderId, "reasoning") is { ValueKind: JsonValueKind.Object } reasoning
-                ? reasoning.Deserialize<Reasoning>(ResponseJson.Default) : null
+                ? reasoning.Deserialize<Reasoning>(ResponseJson.Default) : null,
+            AdditionalProperties = call.Get<INativeChatOptionsProvider>() is null ? null : NativeOptions<ResponseRequest>(call, request, ResponseJson.Default)
         };
     }
 

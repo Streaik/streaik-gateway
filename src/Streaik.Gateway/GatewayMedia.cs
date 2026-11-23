@@ -230,13 +230,23 @@ public static partial class StreaikGateway
         var request = await ReadAsync<EmbeddingRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
         if (request.Values?.Any() != true) throw new ContractException("'values' is required.");
-        var result = await call.Require<IEmbeddingsProvider>().EmbedAsync(new() { Model = call.NativeModel,
+        var native = new OpenAIEmbeddingRequest { Model = call.NativeModel,
             Input = JsonSerializer.SerializeToElement(request.Values, Web), Dimensions = request.Dimensions, EncodingFormat = "float",
-            AdditionalProperties = SelectedOptions(call, request.ProviderOptions, "model", "input", "dimensions", "encoding_format") }, call.Headers, call.Ct);
+            AdditionalProperties = SelectedOptions(call, request.ProviderOptions, "model", "input", "dimensions", "encoding_format", "user") };
+        OpenAIEmbeddingResponse result;
+        EmbeddingResponseMetadata? metadata = null;
+        if (call.Get<IEmbeddingMetadataProvider>() is { } provider)
+        {
+            var (embedding, body, headers) = await provider.EmbedWithMetadataAsync(native, call.Headers, call.Ct);
+            result = embedding;
+            metadata = new() { Body = body,
+                Headers = headers.Where(pair => pair.Value is not null).ToDictionary(pair => pair.Key, pair => pair.Value!, StringComparer.OrdinalIgnoreCase) };
+        }
+        else result = await call.Require<IEmbeddingsProvider>().EmbedAsync(native, call.Headers, call.Ct);
         await context.Response.WriteAsJsonAsync(new EmbeddingResponse
         {
             Embeddings = result.Data.OrderBy(item => item.Index).Select(item => item.Embedding.Deserialize<double[]>() ?? throw new JsonException()).ToArray(),
-            Usage = new() { Tokens = result.Usage.TotalTokens }
+            Usage = new() { Tokens = result.Usage.TotalTokens }, Response = metadata
         }, Web, call.Ct);
     }
 

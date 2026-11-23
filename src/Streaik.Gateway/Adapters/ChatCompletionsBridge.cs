@@ -134,7 +134,7 @@ internal static class ChatCompletionsBridge
             Usage = Usage(result.Usage), Metadata = result.MetadataExtensions };
     }
 
-    public static async IAsyncEnumerable<MessageStreamPart> Updates(IAsyncEnumerable<ChatCompletionUpdate> source)
+    public static async IAsyncEnumerable<MessageStreamPart> Updates(IAsyncEnumerable<ChatCompletionUpdate> source, bool preserveNativeFields = false)
     {
         var tools = new Dictionary<int, ToolState>();
         var next = 0;
@@ -145,9 +145,12 @@ internal static class ChatCompletionsBridge
         var started = false;
         var refusal = false;
         var ids = new HashSet<string>(StringComparer.Ordinal);
+        Dictionary<string, JsonElement>? nativeFields = preserveNativeFields ? new(StringComparer.Ordinal) : null;
         await foreach (var part in source)
         {
             if (part.AdditionalProperties?.ContainsKey("error") == true) throw new IOException("Chat Completions returned a stream error.");
+            if (nativeFields is not null && part.AdditionalProperties is { } extra)
+                foreach (var (name, value) in extra) nativeFields[name] = value;
             usage = part.Usage ?? usage;
             cost = GatewayPricing.Cost(GatewayPricing.ChatMetadata(part.AdditionalProperties)) ?? cost;
             if (part.Choices?.FirstOrDefault(choice => choice.Index == 0) is not { } choice) continue;
@@ -200,7 +203,7 @@ internal static class ChatCompletionsBridge
         }
         for (var index = 0; index < next; index++) yield return new MessageStreamPart { Type = "content_block_stop", Index = index };
         yield return new MessageStreamPart { Type = "message_delta", Delta = new() { StopReason = StopReason(finish, tools.Count != 0, refusal) }, Usage = Usage(usage) };
-        yield return new MessageStreamPart { Type = "message_stop", Metadata = GatewayPricing.CostMetadata(cost) };
+        yield return new MessageStreamPart { Type = "message_stop", Metadata = GatewayPricing.CostMetadata(cost), AdditionalProperties = nativeFields };
     }
 
     private static MessageStreamPart Start(int index, MessageContentBlock block)

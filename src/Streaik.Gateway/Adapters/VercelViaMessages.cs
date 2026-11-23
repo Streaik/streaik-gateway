@@ -49,14 +49,14 @@ internal static partial class VercelAdapter
         var tools = (request.Tools ?? []).DistinctBy(tool => tool.Name).Select(tool => new MessageToolDefinition
         { Name = tool.Name, Description = tool.Description, InputSchema = ToolInput(tool.InputSchema ?? new ToolSchema { Type = "object" }),
             DeferLoading = tool.DeferLoading, AllowedCallers = tool.AllowedCallers?.ToList() }).ToList();
-        if (Option(request, call.ProviderId, "tools") is { ValueKind: JsonValueKind.Array } nativeTools)
+        if (!viaChat && Option(request, call.ProviderId, "tools") is { ValueKind: JsonValueKind.Array } nativeTools)
             tools.AddRange(nativeTools.Deserialize<List<MessageToolDefinition>>(MessagesJson.Default) ?? []);
         if (request.ToolChoice != "none" && tools.Count != 0) nativeRequest.Tools = tools;
         if (nativeRequest.Tools is not null && request.ToolChoice is { } choice)
             nativeRequest.ToolChoice = choice switch
             { "auto" => new MessageToolChoice(), "required" => new MessageToolChoice { Type = "any" },
                 _ => new MessageToolChoice { Type = "tool", Name = choice } };
-        if (Option(request, call.ProviderId, "thinking") is { ValueKind: JsonValueKind.Object } thinking)
+        if (!viaChat && Option(request, call.ProviderId, "thinking") is { ValueKind: JsonValueKind.Object } thinking)
             nativeRequest.Thinking = thinking.Deserialize<MessagesThinkingConfig>(MessagesJson.Default);
         return nativeRequest;
     }
@@ -69,6 +69,7 @@ internal static partial class VercelAdapter
         string? upstreamModel = null;
         string? stop = null;
         var metadata = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var preserveNativeFields = call.Get<Streaik.Providers.INativeChatOptionsProvider>() is not null;
         string PartId(int index) => $"{id}/{index}";
         JsonElement WireBlock(MessageContentBlock block) => JsonSerializer.SerializeToElement(block, MessagesJson.Default);
         Dictionary<string, Dictionary<string, object>?> Meta(MessageContentBlock block) => ToolMetadata(call.ProviderId, NativeBlock, WireBlock(block));
@@ -77,8 +78,9 @@ internal static partial class VercelAdapter
             var index = part.Index ?? -1;
             var partId = PartId(index);
             if (part.Metadata is not null) foreach (var (key, value) in part.Metadata) metadata[key] = value;
-            if (part.AdditionalProperties?.TryGetValue("providerMetadata", out var providerMetadata) == true)
-                metadata["providerMetadata"] = providerMetadata;
+            if (part.AdditionalProperties is { } additional)
+                foreach (var (key, value) in additional)
+                    if (key == "providerMetadata" || preserveNativeFields) metadata[key] = value;
             switch (part)
             {
                 case { Type: "message_start", Message: { } message }:

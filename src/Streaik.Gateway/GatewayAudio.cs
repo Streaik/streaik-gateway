@@ -13,6 +13,21 @@ public static partial class StreaikGateway
         var request = await ReadAsync<AudioSpeechRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
         request.Model = call.NativeModel;
+        if (request.StreamFormat == "sse" && call.Get<IStreamingSpeechProvider>() is { } streaming)
+        {
+            Need(request.Input, "input");
+            using var binary = await streaming.SpeakStreamingAsync(request, call.Headers, call.Ct);
+            _ = AudioType(binary);
+            StartMediaStream(call);
+            context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            await using var source = await binary.Content.ReadAsStreamAsync(call.Ct);
+            var chunk = new byte[16384];
+            while (await source.ReadAsync(chunk, call.Ct) is > 0 and var length)
+                await GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(new AudioSpeechStreamDelta
+                    { Audio = Convert.ToBase64String(chunk, 0, length) }, Web), null, call.Ct);
+            await GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(new AudioSpeechStreamDone(), Web), null, call.Ct);
+            return;
+        }
         using var upstream = await SpeakAsync(call, request);
         var type = upstream.Content.Headers.ContentType?.MediaType;
         context.Response.ContentType = type == "text/event-stream" ? type : AudioType(upstream);
@@ -26,7 +41,7 @@ public static partial class StreaikGateway
         var call = new GatewayCall(context, request.Model);
         using var upstream = await SpeakAsync(call, new() { Model = call.NativeModel, Input = request.Text,
             Voice = request.Voice, ResponseFormat = request.OutputFormat, Instructions = request.Instructions, Speed = request.Speed,
-            AdditionalProperties = SelectedOptions(call, request.ProviderOptions, "model", "input", "voice", "response_format", "stream_format") });
+            AdditionalProperties = SpeechOptions(call, request.ProviderOptions) });
         var type = AudioType(upstream);
         await using var stream = await upstream.Content.ReadAsStreamAsync(call.Ct);
         using var buffer = new MemoryStream();
@@ -50,7 +65,7 @@ public static partial class StreaikGateway
             throw new ContractException("Streaming speech supports one voice and format per request, without per-part options or a custom rate.");
         using var upstream = await SpeakAsync(call, new() { Model = call.NativeModel, Input = string.Concat(request.Text.Select(x => x.Text)),
             Voice = request.Text[0].Voice ?? request.Voice, ResponseFormat = request.OutputFormat?.Type, Instructions = request.Instructions, Speed = request.Speed,
-            AdditionalProperties = SelectedOptions(call, request.ProviderOptions, "model", "input", "voice", "response_format", "stream_format") });
+            AdditionalProperties = SpeechOptions(call, request.ProviderOptions) }, stream: true);
         var type = AudioType(upstream);
         StartMediaStream(call);
         await Part(new SpeechStreamStartPart());
@@ -64,9 +79,16 @@ public static partial class StreaikGateway
         Task Part(StreamingSpeechPart part) => GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(part, Web), null, call.Ct);
     }
 
-    private static Task<HttpResponseMessage> SpeakAsync(GatewayCall call, AudioSpeechRequest request)
+    private static Dictionary<string, JsonElement>? SpeechOptions(GatewayCall call, Dictionary<string, JsonElement>? options)
+        => call.Get<IStreamingSpeechProvider>() is not null
+            ? SelectedOptions(call, options, "model", "input", "response_format", "stream_format", "stream")
+            : SelectedOptions(call, options, "model", "input", "voice", "response_format", "stream_format");
+
+    private static Task<HttpResponseMessage> SpeakAsync(GatewayCall call, AudioSpeechRequest request, bool stream = false)
     {
         Need(request.Input, "input");
+        if (stream && call.Get<IStreamingSpeechProvider>() is { } streaming)
+            return streaming.SpeakStreamingAsync(request, call.Headers, call.Ct);
         return call.Require<ISpeechProvider>().SpeakAsync(request, call.Headers, call.Ct);
     }
 

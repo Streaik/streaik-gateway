@@ -17,6 +17,9 @@ using Streaik.Providers.ImageRouter;
 using Streaik.Providers.OpenAI;
 using Streaik.Providers.OpenRouter;
 using Streaik.Providers.VoyageAI;
+using Streaik.Providers.Sluis;
+using Streaik.Providers.ZeroEntropy;
+using Streaik.Providers.Zyphra;
 
 namespace Streaik.Gateway.Tests;
 
@@ -37,7 +40,8 @@ internal sealed class FixtureHost : IAsyncDisposable
     public static async Task<FixtureHost> StartAsync(Func<UpstreamRequest, HttpResponseMessage>? upstream = null,
         Action<IServiceCollection>? configure = null, bool media = false,
         Action<WebApplicationBuilder>? configureHost = null, string? authorization = null, bool compatibleChat = false, bool liveProviders = false,
-        Action<WebApplication>? configureApp = null, bool decisions = false, bool gladia = false, bool portedProviders = false)
+        Action<WebApplication>? configureApp = null, bool decisions = false, bool gladia = false, bool portedProviders = false,
+        bool sluisZyphraZeroEntropy = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -51,6 +55,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (liveProviders) builder.Services.AddGoogle().AddXai().AddAssemblyAI();
         if (gladia) builder.Services.AddGladia();
         if (portedProviders) builder.Services.AddCanopyWave().AddDaglo().AddVoyageAI();
+        if (sluisZyphraZeroEntropy) builder.Services.AddSluis().AddZyphra().AddZeroEntropy();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -60,6 +65,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (liveProviders) ids.AddRange(["google", "xai", "assemblyai"]);
         if (gladia) ids.Add("gladia");
         if (portedProviders) ids.AddRange(["canopywave", "daglo", "voyageai"]);
+        if (sluisZyphraZeroEntropy) ids.AddRange(["sluis", "zyphra", "zeroentropy"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));
