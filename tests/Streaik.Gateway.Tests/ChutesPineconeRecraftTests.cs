@@ -286,6 +286,23 @@ public sealed class ChutesPineconeRecraftTests
     }
 
     [Fact]
+    public async Task Recraft_vectorize_via_Vercel_chat_preserves_the_SVG_media_type()
+    {
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            CheckRecraft(request, "vectorize");
+            Assert.Contains("name=file;", request.RawBody!);
+            return FixtureHost.Json("""{"image":{"b64_json":"PHN2Zy8+"}}""");
+        }, chutesPineconeRecraft: true);
+        using var response = await host.PostAsync("/api/chat", """
+            {"model":"recraft/vectorize","messages":[{"id":"m","role":"user","parts":[{"type":"text","text":"vectorize"},
+             {"type":"file","mediaType":"image/png","url":"data:image/png;base64,AQID"}]}]}
+            """, RecraftKey);
+        var result = await GatewayTests.Success(response);
+        Assert.Contains("data:image/svg+xml;base64,", result.Replace("\\u002B", "+", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Unsupported_capabilities_and_invalid_Recraft_requests_do_not_call_providers()
     {
         await using var host = await FixtureHost.StartAsync(chutesPineconeRecraft: true);

@@ -187,7 +187,7 @@ internal static class ImageAdapters
     private static OpenAIImageReference Image(string? url, string? file = null) => new() { ImageUrl = url, FileId = file };
     private static string DataUrl(OpenAIImagesResponse result, OpenAIImageData image) => $"data:{Mime(result)};base64,{image.B64Json}";
     private static string Mime(OpenAIImagesResponse result) => result.OutputFormat switch
-    { "jpeg" or "jpg" => "image/jpeg", "webp" => "image/webp", "gif" => "image/gif", "avif" => "image/avif", "bmp" => "image/bmp", _ => "image/png" };
+    { "jpeg" or "jpg" => "image/jpeg", "webp" => "image/webp", "gif" => "image/gif", "avif" => "image/avif", "bmp" => "image/bmp", "svg" => "image/svg+xml", _ => "image/png" };
     private static long Timestamp(OpenAIImagesResponse result) => result.Created > 0 ? result.Created : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     private static string NewId(string prefix) => $"{prefix}_{Guid.NewGuid():N}";
     internal static Dictionary<string, JsonElement>? ProviderMetadata(OpenAIImagesResponse result, string provider)
