@@ -70,16 +70,20 @@ public sealed class ProviderExpansionTests
     }
 
     [Theory]
-    [InlineData("google/")]
-    [InlineData("models/google/")]
-    public async Task Google_compatibility_catalog_ID_starts_and_polls_prompt_only_Omni_video(string upstreamPrefix)
+    [InlineData(false, "models/")]
+    [InlineData(true, "google/")]
+    [InlineData(true, "models/google/")]
+    public async Task Google_catalog_ID_starts_and_polls_prompt_only_Omni_video(bool useFallback, string upstreamPrefix)
     {
         const string nativeModel = "gemini-omni-1.2-flash";
         const string prompt = "A windmill";
+        var upstreamModel = upstreamPrefix + nativeModel;
         await using var host = await FixtureHost.StartAsync(request => (request.Method, request.Path) switch
         {
-            ("GET", "/v1beta/models?pageSize=1000") => FixtureHost.Json("""{"models":[]}"""),
-            ("GET", "/v1beta/openai/models") => FixtureHost.Json($$"""{"data":[{"id":"{{upstreamPrefix}}{{nativeModel}}"}]}"""),
+            ("GET", "/v1beta/models?pageSize=1000") => FixtureHost.Json(useFallback ? """{"models":[]}""" : $$"""
+                {"models":[{"name":"{{upstreamModel}}","supportedGenerationMethods":["generateContent"]}]}
+                """),
+            ("GET", "/v1beta/openai/models") when useFallback => FixtureHost.Json($$"""{"data":[{"id":"{{upstreamModel}}","type":"language"}]}"""),
             ("GET", "/v1beta/agents?page_size=1000") => FixtureHost.Json("""{"agents":[]}"""),
             ("POST", "/v1beta/interactions") => StartOmni(request),
             ("GET", "/v1beta/interactions/omni-fixture") => FixtureHost.Json("""
@@ -93,9 +97,11 @@ public sealed class ProviderExpansionTests
         var models = JsonNode.Parse(await GatewayTests.Success(listed))!["data"]!.AsArray();
         var video = Assert.Single(models, entry => (string?)entry?["type"] == "video")!;
         var model = (string)video["id"]!;
+        Assert.Equal("google/" + nativeModel, model);
+        Assert.Contains(models, entry => (string?)entry?["type"] == "language" && (string?)entry?["id"] == model);
+
         using var created = await host.PostAsync("/api/videos", $$"""{"model":"{{model}}","prompt":"{{prompt}}"}""", key);
         var operation = (string)JsonNode.Parse(await GatewayTests.Success(created))!["operation"]!;
-        Assert.Equal("google/" + nativeModel, model);
         Assert.StartsWith("google/", operation);
 
         using var completed = await host.GetAsync($"/api/videos/{operation}", key);
