@@ -79,6 +79,25 @@ public sealed class RealtimeProviderTests
     }
 
     [Fact]
+    public async Task OpenAI_live_transcribe_secret_preserves_PCM_languages_and_manual_commit()
+    {
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""{"value":"temporary","expires_at":1999999999}"""));
+        using var response = await host.PostAsync("/v1/realtime/client_secrets", """
+            {"session":{"type":"transcription","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"transcription":{"model":"openai/gpt-live-transcribe","languages":["nl"]},"turn_detection":null}}}}
+            """, ("X-OpenAI-Key", "fixture"));
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Equal("temporary", (string?)JsonNode.Parse(await GatewayTests.Success(response))!["value"]);
+        var session = Assert.IsType<JsonObject>(Assert.Single(host.Requests).Body!["session"]);
+        Assert.False(session.ContainsKey("model"));
+        var audio = Assert.IsType<JsonObject>(session["audio"]!["input"]);
+        Assert.True(audio.ContainsKey("turn_detection"));
+        Assert.Null(audio["turn_detection"]);
+        Assert.Equal(24000, (int?)audio["format"]!["rate"]);
+        Assert.Equal("gpt-live-transcribe", (string?)audio["transcription"]!["model"]);
+        Assert.Equal("nl", (string?)audio["transcription"]!["languages"]![0]);
+    }
+
+    [Fact]
     public async Task Gladia_live_session_uses_16khz_mono_audio_and_returns_only_the_ephemeral_session()
     {
         await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""

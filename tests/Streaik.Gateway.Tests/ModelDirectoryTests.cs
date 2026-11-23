@@ -39,6 +39,7 @@ public sealed class ModelDirectoryTests
                   {"id":"vendor/realtime-dashboard"}, {"id":"gpt-4o-audio-preview"},
                   {"id":"gpt-realtime-mini","tags":["Voice","real-time","Realtime","voice"]},
                   {"id":"gpt-realtime-transcribe","type":"transcription","tags":["asr"]},
+                  {"id":"gpt-live-transcribe"}, {"id":"gpt-live-transcribe-2026-10-01"}, {"id":"gpt-realtime-whisper"}, {"id":"gpt-transcribe"},
                   {"id":"gpt-image-1","type":" language ","tags":["streaming"]},
                   {"id":"gpt-4o-mini-tts","type":"model"}, {"id":"whisper-1"}
                 ]}
@@ -64,6 +65,10 @@ public sealed class ModelDirectoryTests
         Check("openai/gpt-image-1", "language", "streaming"); // Explicit provider type wins, streaming alone doesn't imply realtime.
         Check("openai/gpt-realtime-mini", "audio", "Voice", "realtime");
         Check("openai/gpt-realtime-transcribe", "transcription", "asr", "realtime");
+        Check("openai/gpt-live-transcribe", "transcription", "realtime");
+        Check("openai/gpt-live-transcribe-2026-10-01", "transcription", "realtime");
+        Check("openai/gpt-realtime-whisper", "transcription", "realtime");
+        Check("openai/gpt-transcribe", "transcription");
         Check("openai/gpt-4o-mini-tts", "speech");
         Check("openai/whisper-1", "transcription");
         Check("google/gemini-2.5-flash-native-audio-preview", "audio", "realtime");
