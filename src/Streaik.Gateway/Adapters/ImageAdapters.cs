@@ -32,7 +32,7 @@ internal static class ImageAdapters
         var id = NewId("chatcmpl");
         var created = Timestamp(result);
         if (request.Stream == true) await call.WriteChatStreamAsync(Parts());
-        else await call.WriteAsync(new ChatCompletion { Id = id, Created = created, MetadataExtensions = Cost(result, call.ProviderId),
+        else await call.WriteAsync(new ChatCompletion { Id = id, Created = created, MetadataExtensions = ProviderMetadata(result, call.ProviderId),
             Choices = [new ChatCompletionChoice { FinishReason = "stop", Message = new ChatCompletionResponseMessage { Content = "", AdditionalProperties = extras } }] });
 
         async IAsyncEnumerable<ChatCompletionUpdate> Parts()
@@ -40,7 +40,7 @@ internal static class ImageAdapters
             await Task.CompletedTask;
             yield return new() { Id = id, Created = created, Choices = [new() { Delta = new() { Role = "assistant" } }] };
             yield return new() { Id = id, Created = created, Choices = [new() { Delta = new() { AdditionalProperties = extras } }] };
-            yield return new() { Id = id, Created = created, AdditionalProperties = Cost(result, call.ProviderId) is { } metadata
+            yield return new() { Id = id, Created = created, AdditionalProperties = ProviderMetadata(result, call.ProviderId) is { } metadata
                 ? new() { ["metadata"] = JsonSerializer.SerializeToElement(metadata) } : null, Choices = [new() { FinishReason = "stop", Delta = new() }] };
         }
     }
@@ -62,7 +62,7 @@ internal static class ImageAdapters
         var blocks = Images(result).Select(x => new MessageContentBlock { Type = "image", Source = new() { Type = "base64", MediaType = Mime(result), Data = x.B64Json } }).ToList();
         var id = NewId("msg");
         MessagesResponse Message(bool completed) => new() { Id = id, Type = "message", Role = "assistant",
-            Content = completed ? blocks : [], StopReason = completed ? "end_turn" : null, Metadata = completed ? Cost(result, call.ProviderId) : null };
+            Content = completed ? blocks : [], StopReason = completed ? "end_turn" : null, Metadata = completed ? ProviderMetadata(result, call.ProviderId) : null };
         if (request.Stream == true) await call.WriteMessagesStreamAsync(Parts());
         else await call.WriteAsync(Message(true));
 
@@ -76,7 +76,7 @@ internal static class ImageAdapters
                 yield return new() { Type = "content_block_stop", Index = index };
             }
             yield return new() { Type = "message_delta", Delta = new() { StopReason = "end_turn" } };
-            yield return new() { Type = "message_stop", Metadata = Cost(result, call.ProviderId) };
+            yield return new() { Type = "message_stop", Metadata = ProviderMetadata(result, call.ProviderId) };
         }
     }
 
@@ -99,7 +99,7 @@ internal static class ImageAdapters
         var id = NewId("resp");
         var created = Timestamp(result);
         ResponseResult Envelope(bool completed) => new() { Id = id, CreatedAt = created, Status = completed ? "completed" : "in_progress",
-            Output = completed ? [.. items] : [], Metadata = completed ? Cost(result, call.ProviderId)?.ToDictionary(x => x.Key, x => (object?)x.Value) : null };
+            Output = completed ? [.. items] : [], Metadata = completed ? ProviderMetadata(result, call.ProviderId)?.ToDictionary(x => x.Key, x => (object?)x.Value) : null };
         if (request.Stream == true) await call.WriteResponsesStreamAsync(Parts());
         else await call.WriteAsync(Envelope(true));
 
@@ -140,7 +140,7 @@ internal static class ImageAdapters
             yield return new StartStepUIPart();
             foreach (var image in images) yield return new FileUIPart { MediaType = Mime(result), Url = DataUrl(result, image) };
             yield return new FinishUIPart { FinishReason = "stop", MessageMetadata = new() { Model = call.Model,
-                Timestamp = DateTimeOffset.FromUnixTimeSeconds(Timestamp(result)), Usage = new(), ProviderMetadata = Cost(result, call.ProviderId) } };
+                Timestamp = DateTimeOffset.FromUnixTimeSeconds(Timestamp(result)), Usage = new(), ProviderMetadata = ProviderMetadata(result, call.ProviderId) } };
         }
     }
 
@@ -186,12 +186,17 @@ internal static class ImageAdapters
         ? data.ToArray() : throw new ContractException("The image provider did not return inline images.", 502);
     private static OpenAIImageReference Image(string? url, string? file = null) => new() { ImageUrl = url, FileId = file };
     private static string DataUrl(OpenAIImagesResponse result, OpenAIImageData image) => $"data:{Mime(result)};base64,{image.B64Json}";
-    private static string Mime(OpenAIImagesResponse result) => result.OutputFormat switch { "jpeg" or "jpg" => "image/jpeg", "webp" => "image/webp", "gif" => "image/gif", _ => "image/png" };
+    private static string Mime(OpenAIImagesResponse result) => result.OutputFormat switch
+    { "jpeg" or "jpg" => "image/jpeg", "webp" => "image/webp", "gif" => "image/gif", "avif" => "image/avif", "bmp" => "image/bmp", _ => "image/png" };
     private static long Timestamp(OpenAIImagesResponse result) => result.Created > 0 ? result.Created : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     private static string NewId(string prefix) => $"{prefix}_{Guid.NewGuid():N}";
-    private static Dictionary<string, JsonElement>? Cost(OpenAIImagesResponse result, string provider)
-        => result.AdditionalProperties?.TryGetValue("cost", out var cost) == true && cost.ValueKind == JsonValueKind.Number
+    internal static Dictionary<string, JsonElement>? ProviderMetadata(OpenAIImagesResponse result, string provider)
+    {
+        if (result.AdditionalProperties?.GetValueOrDefault("providerMetadata") is { ValueKind: JsonValueKind.Object } metadata)
+            return metadata.EnumerateObject().ToDictionary(property => property.Name, property => property.Value, StringComparer.Ordinal);
+        return result.AdditionalProperties?.GetValueOrDefault("cost") is { ValueKind: JsonValueKind.Number } cost
             ? new() { [provider] = JsonSerializer.SerializeToElement(new { cost }) } : null;
+    }
     private static ContractException MissingPrompt() => new("The latest user turn must include an image prompt.");
     private static ContractException UnsupportedPart() => new("Image turns accept text and image inputs only.", 422);
 }

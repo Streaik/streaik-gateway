@@ -115,7 +115,7 @@ internal static partial class ProtocolAdapters
                 OutputTokensDetails = new ResponseOutputTokensDetails { ReasoningTokens = usage.OutputTokensDetails?.ThinkingTokens } } };
     }
 
-    private static async IAsyncEnumerable<ResponseStreamPart> ResponseUpdates(IAsyncEnumerable<MessageStreamPart> source)
+    private static async IAsyncEnumerable<ResponseStreamPart> ResponseUpdates(IAsyncEnumerable<MessageStreamPart> source, string? metadataProvider = null)
     {
         var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var usage = new MessagesUsage();
@@ -178,6 +178,7 @@ internal static partial class ProtocolAdapters
                 case { Type: "message_stop" }:
                     var result = ResponseResultFrom(id, created, blocks.Select(x => OutputItem(id, x.Key, x.Value.Block)).ToList(), usage, stop);
                     if (upstreamModel is not null) result.Model = upstreamModel;
+                    AttachProviderMetadata(result, part.Metadata, metadataProvider);
                     GatewayPricing.Attach(result, GatewayPricing.Cost(part.Metadata) ?? cost);
                     yield return result.Status == "incomplete" ? new ResponseIncompleteEvent { SequenceNumber = sequence++, Response = result }
                         : new ResponseCompleted { SequenceNumber = sequence++, Response = result };

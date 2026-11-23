@@ -163,6 +163,9 @@ public static partial class StreaikGateway
         await context.Response.WriteAsJsonAsync(new ImageResponse
         {
             Images = result.Data?.Select(item => VercelImageData(item, result.OutputFormat)).ToArray(),
+            ProviderMetadata = ImageAdapters.ProviderMetadata(result, call.ProviderId),
+            Warnings = result.AdditionalProperties?.GetValueOrDefault("warnings") is { ValueKind: JsonValueKind.Array } warnings
+                ? warnings.EnumerateArray().Select(static item => (object)item).ToArray() : [],
             Response = new() { ModelId = call.Model, Timestamp = DateTime.UtcNow },
             Usage = result.Usage is { } usage ? new() { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens, TotalTokens = usage.TotalTokens } : null
         }, Web, call.Ct);
@@ -193,8 +196,10 @@ public static partial class StreaikGateway
     private static async Task StartVideoAsync(HttpContext context)
     {
         var request = await ReadAsync<VideoRequest>(context, Web);
-        Need(request.Prompt, "prompt");
         var call = new GatewayCall(context, request.Model);
+        // These FLUX operations take a video or draft cache rather than a generation prompt.
+        if (call.ProviderId != "blackforestlabs" || call.NativeModel.ToLowerInvariant() is not ("flux-3-video-draft-enhance" or "flux-tools/video-upscale-v1"))
+            Need(request.Prompt, "prompt");
         var provider = call.Require<IVideoProvider>();
         var references = new GatewayReferences(call, "video");
         request.Model = call.NativeModel;

@@ -115,7 +115,7 @@ internal static class ChatCompletionsBridge
             Parameters = tool.InputSchema, Strict = tool.Strict } };
     }
 
-    public static MessagesResponse Result(ChatCompletion result)
+    public static MessagesResponse Result(ChatCompletion result, string? metadataProvider = null)
     {
         if (result.AdditionalProperties?.ContainsKey("error") == true || result.Choices?.FirstOrDefault(choice => choice.Index == 0) is not { } choice
             || choice.Message is not { } message || message.FunctionCall is not null || message.Audio is not null)
@@ -129,12 +129,22 @@ internal static class ChatCompletionsBridge
             blocks.Add(new() { Type = "tool_use", Id = function.Id, Name = function.Function.Name,
                 Input = Arguments(function.Function.Arguments) });
         }
+        var metadata = result.MetadataExtensions;
+        if (metadataProvider is not null)
+        {
+            var raw = result.AdditionalProperties is { } fields ? new Dictionary<string, JsonElement>(fields) : new();
+            AddRaw(raw, "choice_extensions", choice.AdditionalProperties);
+            AddRaw(raw, "message_extensions", message.AdditionalProperties);
+            AddRaw(raw, "annotations", message.Annotations?.ToArray());
+            metadata = ProviderMetadata(metadataProvider, raw, result.Usage, metadata);
+        }
         return new MessagesResponse { Id = result.Id, Model = result.Model, Role = "assistant", Type = "message", Content = blocks,
             StopReason = StopReason(choice.FinishReason, blocks.Any(block => block.Type == "tool_use"), message.Refusal is { Length: > 0 }),
-            Usage = Usage(result.Usage), Metadata = result.MetadataExtensions };
+            Usage = Usage(result.Usage), Metadata = metadata };
     }
 
-    public static async IAsyncEnumerable<MessageStreamPart> Updates(IAsyncEnumerable<ChatCompletionUpdate> source, bool preserveNativeFields = false)
+    public static async IAsyncEnumerable<MessageStreamPart> Updates(IAsyncEnumerable<ChatCompletionUpdate> source,
+        bool preserveNativeFields = false, string? metadataProvider = null)
     {
         var tools = new Dictionary<int, ToolState>();
         var next = 0;
@@ -146,6 +156,7 @@ internal static class ChatCompletionsBridge
         var refusal = false;
         var ids = new HashSet<string>(StringComparer.Ordinal);
         Dictionary<string, JsonElement>? nativeFields = preserveNativeFields ? new(StringComparer.Ordinal) : null;
+        List<object>? nativeDeltas = preserveNativeFields ? [] : null;
         await foreach (var part in source)
         {
             if (part.AdditionalProperties?.ContainsKey("error") == true) throw new IOException("Chat Completions returned a stream error.");
@@ -154,6 +165,8 @@ internal static class ChatCompletionsBridge
             usage = part.Usage ?? usage;
             cost = GatewayPricing.Cost(GatewayPricing.ChatMetadata(part.AdditionalProperties)) ?? cost;
             if (part.Choices?.FirstOrDefault(choice => choice.Index == 0) is not { } choice) continue;
+            if (nativeDeltas is not null && (choice.AdditionalProperties?.Count > 0 || choice.Delta?.AdditionalProperties?.Count > 0))
+                nativeDeltas.Add(new { choice = choice.AdditionalProperties, delta = choice.Delta?.AdditionalProperties });
             if (!started)
             {
                 started = true;
@@ -203,7 +216,38 @@ internal static class ChatCompletionsBridge
         }
         for (var index = 0; index < next; index++) yield return new MessageStreamPart { Type = "content_block_stop", Index = index };
         yield return new MessageStreamPart { Type = "message_delta", Delta = new() { StopReason = StopReason(finish, tools.Count != 0, refusal) }, Usage = Usage(usage) };
-        yield return new MessageStreamPart { Type = "message_stop", Metadata = GatewayPricing.CostMetadata(cost), AdditionalProperties = nativeFields };
+        if (nativeFields is not null && nativeDeltas is { Count: > 0 }) AddRaw(nativeFields, "choice_deltas", nativeDeltas);
+        var metadata = GatewayPricing.CostMetadata(cost);
+        if (metadataProvider is not null && nativeFields is not null)
+            metadata = ProviderMetadata(metadataProvider, nativeFields, usage, metadata);
+        else if (nativeFields is not null && usage?.AdditionalProperties?.Count > 0)
+            AddRaw(nativeFields, "usage_extensions", usage.AdditionalProperties);
+        yield return new MessageStreamPart { Type = "message_stop", Metadata = metadata, AdditionalProperties = metadataProvider is null ? nativeFields : null };
+    }
+
+    private static void AddRaw<T>(Dictionary<string, JsonElement> raw, string key, T? value) where T : class
+    {
+        if (value is not null) raw.TryAdd(key, JsonSerializer.SerializeToElement(value, JsonSerializerOptions.Web));
+    }
+
+    private static Dictionary<string, JsonElement>? ProviderMetadata(string provider, Dictionary<string, JsonElement> raw,
+        ChatCompletionUsage? usage, Dictionary<string, JsonElement>? metadata)
+    {
+        var scoped = new Dictionary<string, JsonElement>();
+        if (raw.Remove("providerMetadata", out var supplied) && supplied.ValueKind == JsonValueKind.Object)
+        {
+            metadata = metadata is null ? new() : new(metadata);
+            foreach (var property in supplied.EnumerateObject()) metadata.TryAdd(property.Name, property.Value);
+        }
+        raw.Remove("metadata");
+        if (raw.Count == 0 && usage is null) return metadata;
+        if (metadata?.GetValueOrDefault(provider) is { ValueKind: JsonValueKind.Object } existing)
+            foreach (var property in existing.EnumerateObject()) scoped[property.Name] = property.Value;
+        if (raw.Count != 0) AddRaw(scoped, "raw", raw);
+        AddRaw(scoped, "usage", usage);
+        var result = metadata is null ? new Dictionary<string, JsonElement>() : new(metadata);
+        result[provider] = JsonSerializer.SerializeToElement(scoped, JsonSerializerOptions.Web);
+        return result;
     }
 
     private static MessageStreamPart Start(int index, MessageContentBlock block)

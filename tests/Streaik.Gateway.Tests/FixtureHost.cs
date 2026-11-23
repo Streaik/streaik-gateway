@@ -8,12 +8,14 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Streaik.Providers;
 using Streaik.Providers.Anthropic;
+using Streaik.Providers.BlackForestLabs;
 using Streaik.Providers.CanopyWave;
 using Streaik.Providers.Daglo;
 using Streaik.Providers.Deepgram;
 using Streaik.Providers.Fireworks;
 using Streaik.Providers.Gladia;
 using Streaik.Providers.ImageRouter;
+using Streaik.Providers.Jina;
 using Streaik.Providers.OpenAI;
 using Streaik.Providers.OpenRouter;
 using Streaik.Providers.VoyageAI;
@@ -41,7 +43,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         Action<IServiceCollection>? configure = null, bool media = false,
         Action<WebApplicationBuilder>? configureHost = null, string? authorization = null, bool compatibleChat = false, bool liveProviders = false,
         Action<WebApplication>? configureApp = null, bool decisions = false, bool gladia = false, bool portedProviders = false,
-        bool sluisZyphraZeroEntropy = false)
+        bool sluisZyphraZeroEntropy = false, bool moonshotJinaBlackForestLabs = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -56,6 +58,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (gladia) builder.Services.AddGladia();
         if (portedProviders) builder.Services.AddCanopyWave().AddDaglo().AddVoyageAI();
         if (sluisZyphraZeroEntropy) builder.Services.AddSluis().AddZyphra().AddZeroEntropy();
+        if (moonshotJinaBlackForestLabs) builder.Services.AddMoonshot().AddJina().AddBlackForestLabs();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -66,6 +69,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (gladia) ids.Add("gladia");
         if (portedProviders) ids.AddRange(["canopywave", "daglo", "voyageai"]);
         if (sluisZyphraZeroEntropy) ids.AddRange(["sluis", "zyphra", "zeroentropy"]);
+        if (moonshotJinaBlackForestLabs) ids.AddRange(["moonshot", "jina", "jina-search", "blackforestlabs", "blackforestlabs-assets"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

@@ -3,12 +3,14 @@ using Streaik.Gateway;
 using Streaik.Gateway.Sample;
 using Streaik.Providers;
 using Streaik.Providers.Anthropic;
+using Streaik.Providers.BlackForestLabs;
 using Streaik.Providers.CanopyWave;
 using Streaik.Providers.Daglo;
 using Streaik.Providers.Deepgram;
 using Streaik.Providers.Fireworks;
 using Streaik.Providers.Gladia;
 using Streaik.Providers.ImageRouter;
+using Streaik.Providers.Jina;
 using Streaik.Providers.OpenAI;
 using Streaik.Providers.OpenRouter;
 using Streaik.Providers.VoyageAI;
@@ -26,6 +28,7 @@ if (builder.Environment.IsDevelopment())
 builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGladia().AddOpenRouter().AddFireworks()
     .AddDeepSeek().AddGroq().AddTogether().AddCerebras().AddGoogle().AddXai().AddAssemblyAI()
     .AddCanopyWave().AddDaglo().AddVoyageAI().AddSluis().AddZyphra().AddZeroEntropy()
+    .AddMoonshot().AddJina().AddBlackForestLabs()
     .AddStreaikHeaderAuth().AddStreaikReferences();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))
     builder.Services.AddSingleton(new ToolApprovalSigner(secret));
