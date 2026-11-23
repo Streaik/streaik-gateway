@@ -8,12 +8,15 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Streaik.Providers;
 using Streaik.Providers.Anthropic;
+using Streaik.Providers.CanopyWave;
+using Streaik.Providers.Daglo;
 using Streaik.Providers.Deepgram;
 using Streaik.Providers.Fireworks;
 using Streaik.Providers.Gladia;
 using Streaik.Providers.ImageRouter;
 using Streaik.Providers.OpenAI;
 using Streaik.Providers.OpenRouter;
+using Streaik.Providers.VoyageAI;
 
 namespace Streaik.Gateway.Tests;
 
@@ -34,7 +37,7 @@ internal sealed class FixtureHost : IAsyncDisposable
     public static async Task<FixtureHost> StartAsync(Func<UpstreamRequest, HttpResponseMessage>? upstream = null,
         Action<IServiceCollection>? configure = null, bool media = false,
         Action<WebApplicationBuilder>? configureHost = null, string? authorization = null, bool compatibleChat = false, bool liveProviders = false,
-        Action<WebApplication>? configureApp = null, bool decisions = false, bool gladia = false)
+        Action<WebApplication>? configureApp = null, bool decisions = false, bool gladia = false, bool portedProviders = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -47,6 +50,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (compatibleChat) builder.Services.AddDeepSeek().AddGroq().AddTogether().AddCerebras();
         if (liveProviders) builder.Services.AddGoogle().AddXai().AddAssemblyAI();
         if (gladia) builder.Services.AddGladia();
+        if (portedProviders) builder.Services.AddCanopyWave().AddDaglo().AddVoyageAI();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -55,6 +59,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (compatibleChat) ids.AddRange(["deepseek", "groq", "together", "cerebras"]);
         if (liveProviders) ids.AddRange(["google", "xai", "assemblyai"]);
         if (gladia) ids.Add("gladia");
+        if (portedProviders) ids.AddRange(["canopywave", "daglo", "voyageai"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));
