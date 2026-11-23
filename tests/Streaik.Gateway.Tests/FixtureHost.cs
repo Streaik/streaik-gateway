@@ -43,7 +43,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         Action<IServiceCollection>? configure = null, bool media = false,
         Action<WebApplicationBuilder>? configureHost = null, string? authorization = null, bool compatibleChat = false, bool liveProviders = false,
         Action<WebApplication>? configureApp = null, bool decisions = false, bool gladia = false, bool portedProviders = false,
-        bool sluisZyphraZeroEntropy = false, bool moonshotJinaBlackForestLabs = false)
+        bool sluisZyphraZeroEntropy = false, bool moonshotJinaBlackForestLabs = false, bool chutesPineconeRecraft = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -59,6 +59,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (portedProviders) builder.Services.AddCanopyWave().AddDaglo().AddVoyageAI();
         if (sluisZyphraZeroEntropy) builder.Services.AddSluis().AddZyphra().AddZeroEntropy();
         if (moonshotJinaBlackForestLabs) builder.Services.AddMoonshot().AddJina().AddBlackForestLabs();
+        if (chutesPineconeRecraft) builder.Services.AddChutes().AddPinecone().AddRecraft();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -70,6 +71,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (portedProviders) ids.AddRange(["canopywave", "daglo", "voyageai"]);
         if (sluisZyphraZeroEntropy) ids.AddRange(["sluis", "zyphra", "zeroentropy"]);
         if (moonshotJinaBlackForestLabs) ids.AddRange(["moonshot", "jina", "jina-search", "blackforestlabs", "blackforestlabs-assets"]);
+        if (chutesPineconeRecraft) ids.AddRange(["chutes", "pinecone", "recraft", "recraft-assets"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

@@ -28,7 +28,7 @@ if (builder.Environment.IsDevelopment())
 builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGladia().AddOpenRouter().AddFireworks()
     .AddDeepSeek().AddGroq().AddTogether().AddCerebras().AddGoogle().AddXai().AddAssemblyAI()
     .AddCanopyWave().AddDaglo().AddVoyageAI().AddSluis().AddZyphra().AddZeroEntropy()
-    .AddMoonshot().AddJina().AddBlackForestLabs()
+    .AddMoonshot().AddJina().AddBlackForestLabs().AddChutes().AddPinecone().AddRecraft()
     .AddStreaikHeaderAuth().AddStreaikReferences();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))
     builder.Services.AddSingleton(new ToolApprovalSigner(secret));
