@@ -133,6 +133,10 @@ public sealed class ProviderExpansionTests
         Assert.Equal("Bonjour", (string?)result["text"]);
         Assert.Equal("fr", (string?)result["language"]);
         Assert.Equal(1.25, (double)(result[multipart ? "duration" : "durationInSeconds"]!));
+        var segment = Assert.IsType<JsonObject>(Assert.Single(result["segments"]!.AsArray()));
+        Assert.Equal(multipart ? ["end", "id", "start", "text"] : new[] { "endSecond", "startSecond", "text" },
+            segment.Select(entry => entry.Key).Order(StringComparer.Ordinal));
+        if (!multipart) Assert.Equal(0, (int?)result["providerMetadata"]!["gladia"]!["utterances"]![0]!["speaker"]);
         Assert.Equal(new[] { "POST", "POST", "GET", "DELETE" }, host.Requests.Select(x => x.Method));
 
         static HttpResponseMessage Upload(FixtureHost.UpstreamRequest request)
@@ -146,6 +150,14 @@ public sealed class ProviderExpansionTests
             Assert.Equal("fr", (string?)request.Body["language_config"]!["languages"]![0]);
             return FixtureHost.Json($$"""{"id":"{{id}}","result_url":"https://ignored.example/not-used"}""");
         }
+    }
+
+    [Fact]
+    public void Vercel_transcription_segment_has_only_the_locked_properties()
+    {
+        var properties = typeof(Streaik.Vercel.Models.TranscriptionSegment).GetProperties()
+            .Select(property => property.Name).Order(StringComparer.Ordinal);
+        Assert.Equal(new[] { "EndSecond", "StartSecond", "Text" }, properties);
     }
 
     [Fact]

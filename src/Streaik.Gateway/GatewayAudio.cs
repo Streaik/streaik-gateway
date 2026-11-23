@@ -159,7 +159,13 @@ public static partial class StreaikGateway
         if (encoded.Length > MaxMediaBytes * 4 / 3 + 8) throw new ContractException("Audio is too large.", 413);
         if (mediaType is null || !mediaType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) || !mediaType.Skip(6).All(ch => char.IsAsciiLetterOrDigit(ch) || ch is '.' or '-' or '+'))
             throw new ContractException("An audio MIME type is required.");
-        try { return (Convert.FromBase64String(encoded), mediaType); }
+        try
+        {
+            var bytes = Convert.FromBase64String(encoded);
+            if (bytes.Length == 0) throw new ContractException("'audio' must not be empty.");
+            if (bytes.Length > MaxMediaBytes) throw new ContractException("Audio is too large.", 413);
+            return (bytes, mediaType);
+        }
         catch (FormatException) { throw new ContractException("Invalid base64 audio."); }
     }
 }

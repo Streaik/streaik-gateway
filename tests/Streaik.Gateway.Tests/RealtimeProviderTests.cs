@@ -46,6 +46,62 @@ public sealed class RealtimeProviderTests
     }
 
     [Fact]
+    public async Task OpenAI_transcription_secret_routes_by_nested_model_without_adding_voice_model()
+    {
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""
+            {"value":"temporary","expires_at":1999999999,"session":{"type":"transcription","audio":{"input":{"transcription":{"model":"gpt-realtime-transcribe"}}}}}
+            """));
+        const string path = "/v1/realtime/client_secrets";
+        using var response = await host.PostAsync(path, """
+            {"session":{"type":"transcription","audio":{"input":{"transcription":{"model":"openai/gpt-realtime-transcribe","language":"en"},"turn_detection":{"type":"server_vad"}}}}}
+            """, ("X-OpenAI-Key", "fixture"), ("X-Gladia-Key", "not-forwarded"));
+        var body = JsonNode.Parse(await GatewayTests.Success(response))!;
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Equal("temporary", (string?)body["value"]);
+        Assert.Equal(1999999999, (long?)body["expires_at"]);
+        Assert.Null(body["session"]!["model"]);
+        Assert.Equal("openai/gpt-realtime-transcribe", (string?)body["session"]!["audio"]!["input"]!["transcription"]!["model"]);
+        var upstream = Assert.Single(host.Requests);
+        Assert.Equal(path, upstream.Path);
+        Assert.Equal("Bearer fixture", upstream.Headers["Authorization"]);
+        Assert.DoesNotContain("X-Gladia-Key", upstream.Headers.Keys, StringComparer.OrdinalIgnoreCase);
+        var session = upstream.Body!["session"]!;
+        Assert.Equal("transcription", (string?)session["type"]);
+        Assert.Null(session["model"]);
+        Assert.Equal("gpt-realtime-transcribe", (string?)session["audio"]!["input"]!["transcription"]!["model"]);
+        Assert.Equal("en", (string?)session["audio"]!["input"]!["transcription"]!["language"]);
+
+        using var mismatch = await host.PostAsync(path, """
+            {"model":"openai/other","session":{"type":"transcription","audio":{"input":{"transcription":{"model":"openai/gpt-realtime-transcribe"}}}}}
+            """, ("X-OpenAI-Key", "fixture"));
+        Assert.Equal(HttpStatusCode.BadRequest, mismatch.StatusCode);
+        Assert.Single(host.Requests);
+    }
+
+    [Fact]
+    public async Task Gladia_live_session_uses_16khz_mono_audio_and_returns_only_the_ephemeral_session()
+    {
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""
+            {"id":"fixture-session","url":"wss://api.gladia.io/v2/live?token=temporary"}
+            """), gladia: true);
+        using var response = await host.PostAsync("/api/realtime/token/gladia/solaria-1", """
+            {"sessionConfig":{"providerOptions":{"gladia":{"language_config":{"languages":["en"]}}}}}
+            """, ("X-Gladia-Key", "fixture"), ("X-OpenAI-Key", "not-forwarded"));
+        var body = JsonNode.Parse(await GatewayTests.Success(response))!;
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Equal("fixture-session", (string?)body["token"]);
+        Assert.Equal("wss://api.gladia.io/v2/live?token=temporary", (string?)body["url"]);
+        var upstream = Assert.Single(host.Requests);
+        Assert.Equal("/v2/live", upstream.Path);
+        Assert.Equal("fixture", upstream.Headers["x-gladia-key"]);
+        Assert.DoesNotContain("X-OpenAI-Key", upstream.Headers.Keys, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal("wav/pcm", (string?)upstream.Body!["encoding"]);
+        Assert.Equal(16000, (int?)upstream.Body!["sample_rate"]);
+        Assert.Equal(16, (int?)upstream.Body["bit_depth"]);
+        Assert.Equal(1, (int?)upstream.Body["channels"]);
+    }
+
+    [Fact]
     public async Task OpenAI_native_live_and_existing_client_secret_use_distinct_contracts()
     {
         await using var host = await FixtureHost.StartAsync(request => request.Path switch
