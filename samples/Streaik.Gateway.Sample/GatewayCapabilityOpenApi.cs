@@ -19,7 +19,7 @@ internal static class GatewayCapabilityOpenApi
         ("Realtime", ["/v1/realtime", "/v1/live", "/api/realtime"]),
         ("Embeddings", ["/v1/embeddings", "/api/embeddings"]),
         ("Rerank", ["/api/rerank"]),
-        ("Discovery", ["/v1/models"]),
+        ("LLM", ["/v1/models"]),
         ("Skills", ["/v1/skills", "/v1/skills/providers", "/v1/skills/{providerId}/{skillId}/versions",
             "/v1/skills/{providerId}/{skillId}/content", "/v1/skills/{providerId}/{skillId}/versions/{version}/content"])
     ];

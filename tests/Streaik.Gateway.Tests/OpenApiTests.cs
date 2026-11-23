@@ -105,7 +105,7 @@ public sealed class OpenApiTests
             ("Realtime", ["/v1/realtime/client_secrets", "/v1/live/sessions"], ["/api/realtime/token/{model}", "/api/realtime/session/{model}"]),
             ("Embeddings", ["/v1/embeddings"], ["/api/embeddings"]),
             ("Rerank", [], ["/api/rerank"]),
-            ("Discovery", ["/v1/models"], []),
+            ("LLM", ["/v1/models"], []),
             ("Skills", ["/v1/skills", "/v1/skills/providers", "/v1/skills/{providerId}/{skillId}/versions",
                 "/v1/skills/{providerId}/{skillId}/content", "/v1/skills/{providerId}/{skillId}/versions/{version}/content"], [])
         ];
