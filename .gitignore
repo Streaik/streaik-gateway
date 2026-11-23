@@ -22,6 +22,7 @@ nupkg/
 # Code Rush
 .cr/
 
+
 # User-specific files
 *.suo
 *.user
@@ -41,6 +42,7 @@ dist/
 **/fakton/
 **/Docs/
 scripts/
+!samples/Streaik.Gateway.Sample/appsettings.Development.json
 
 # Build results
 [Dd]ebug/
