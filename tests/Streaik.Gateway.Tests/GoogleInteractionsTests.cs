@@ -5,9 +5,157 @@ namespace Streaik.Gateway.Tests;
 
 public sealed class GoogleInteractionsTests
 {
+    private const string PricedModel = "google/gemini-3.8-flash";
+    private const string Usage = """
+        {"total_input_tokens":100,"total_cached_tokens":20,"total_output_tokens":30,"total_thought_tokens":10,"total_tokens":140}
+        """;
+    // 80 regular input, 20 cached input, 40 output (including thoughts), at the catalog's per-token rates.
+    private const decimal Cost = 0.0002115m;
     private const string Answer = """
         {"id":"private-google-run","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"From Gemini"}]}],"usage":{"total_input_tokens":7,"total_output_tokens":3,"total_tokens":10}}
         """;
+
+    [Theory]
+    [InlineData("/api/chat", true)]
+    [InlineData("/v1/responses", true)]
+    [InlineData("/v1/responses", false)]
+    [InlineData("/v1/messages", true)]
+    [InlineData("/v1/messages", false)]
+    public async Task Gemini_usage_and_estimated_cost_survive_gateway_translation(string route, bool stream)
+    {
+        var answer = AnswerWithUsage(Usage);
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            AssertInteraction(request, stream);
+            return stream ? FixtureHost.Sse("""
+                {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"From Gemini"},"metadata":{"total_usage":{"total_input_tokens":100,"total_output_tokens":1}}}
+                """, Completed(answer)) : FixtureHost.Json(answer);
+        }, liveProviders: true);
+
+        var body = await Post(host, route, PricedModel, stream);
+        if (route == "/api/chat")
+        {
+            var metadata = FinishMetadata(body);
+            AssertVercelUsage(metadata);
+            AssertEstimate(metadata["providerMetadata"]?["gateway"]);
+        }
+        else if (route == "/v1/responses")
+        {
+            var result = stream ? Assert.Single(Frames(body), node => (string?)node["type"] == "response.completed")["response"]! : JsonNode.Parse(body)!;
+            var usage = result["usage"]!;
+            Assert.Equal(100, (int?)usage["input_tokens"]);
+            Assert.Equal(40, (int?)usage["output_tokens"]);
+            Assert.Equal(140, (int?)usage["total_tokens"]);
+            Assert.Equal(20, (int?)usage["input_tokens_details"]?["cached_tokens"]);
+            Assert.Equal(10, (int?)usage["output_tokens_details"]?["reasoning_tokens"]);
+            AssertEstimate(result["metadata"]?["gateway"]);
+        }
+        else
+        {
+            var frames = stream ? Frames(body) : [JsonNode.Parse(body)!];
+            var usage = (stream ? Assert.Single(frames, node => (string?)node["type"] == "message_delta") : frames[0])["usage"]!;
+            Assert.Equal(80, (int?)usage["input_tokens"]);
+            Assert.Equal(40, (int?)usage["output_tokens"]);
+            Assert.Equal(20, (int?)usage["cache_read_input_tokens"]);
+            Assert.Equal(10, (int?)usage["output_tokens_details"]?["thinking_tokens"]);
+            AssertEstimate((stream ? Assert.Single(frames, node => (string?)node["type"] == "message_stop") : frames[0])["metadata"]?["gateway"]);
+        }
+        Assert.Single(host.Requests);
+    }
+
+    [Fact]
+    public async Task Api_chat_uses_latest_cumulative_usage_even_without_a_step_index_or_reported_total()
+    {
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            AssertInteraction(request, stream: true);
+            return FixtureHost.Sse("""
+                {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"From Gemini"},"metadata":{"total_usage":{"total_input_tokens":100,"total_output_tokens":1}}}
+                """, """
+                {"event_type":"interaction.completed","interaction":{"id":"private-google-run","status":"completed","usage":{}},"metadata":{"total_usage":{"total_input_tokens":100,"total_cached_tokens":20,"total_output_tokens":30,"total_thought_tokens":10}}}
+                """);
+        }, liveProviders: true);
+        var metadata = FinishMetadata(await Post(host, "/api/chat", PricedModel, stream: true));
+        AssertVercelUsage(metadata);
+        AssertEstimate(metadata["providerMetadata"]?["gateway"]);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("{}")]
+    [InlineData("""{"total_input_tokens":100}""")]
+    public async Task Api_chat_leaves_missing_usage_and_cost_unknown(string? usage)
+    {
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            AssertInteraction(request, stream: true);
+            return FixtureHost.Sse(Completed(AnswerWithUsage(usage)));
+        }, liveProviders: true);
+        var metadata = FinishMetadata(await Post(host, "/api/chat", PricedModel, stream: true));
+        Assert.Null(metadata["usage"]?["promptTokens"]);
+        Assert.Null(metadata["usage"]?["completionTokens"]);
+        Assert.Null(metadata["usage"]?["totalTokens"]);
+        Assert.Null(metadata["providerMetadata"]?["gateway"]?["cost"]);
+    }
+
+    [Fact]
+    public async Task Api_chat_reports_usage_without_cost_for_an_unpriced_model()
+    {
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            AssertInteraction(request, stream: true);
+            return FixtureHost.Json(AnswerWithUsage(Usage));
+        }, liveProviders: true);
+        var metadata = FinishMetadata(await Post(host, "/api/chat", "google/gemini-fixture-unpriced", stream: true));
+        AssertVercelUsage(metadata);
+        Assert.Null(metadata["providerMetadata"]?["gateway"]?["cost"]);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public async Task Google_chat_completions_preserves_native_routing_and_stream_usage_opt_in(bool stream, bool includeUsage)
+    {
+        const string usage = """
+            {"prompt_tokens":100,"completion_tokens":40,"total_tokens":140,"prompt_tokens_details":{"cached_tokens":20},"completion_tokens_details":{"reasoning_tokens":10}}
+            """;
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            Assert.Equal("generativelanguage.googleapis.com", request.Host);
+            Assert.Equal("/v1beta/openai/chat/completions", request.Path);
+            Assert.Equal("gemini-3.8-flash", (string?)request.Body?["model"]);
+            Assert.Equal(stream, request.Stream);
+            Assert.Equal(includeUsage, (bool?)request.Body?["stream_options"]?["include_usage"] ?? false);
+            if (!stream) return FixtureHost.Json("""
+                {"id":"chat_1","model":"gemini-3.8-flash","created":1,"choices":[{"index":0,"message":{"role":"assistant","content":"From Gemini"},"finish_reason":"stop"}],"usage":
+                """ + usage + "}");
+            const string finish = """
+                {"id":"chat_1","model":"gemini-3.8-flash","created":1,"choices":[{"index":0,"delta":{"content":"From Gemini"},"finish_reason":"stop"}]}
+                """;
+            return includeUsage ? FixtureHost.Sse(finish, """
+                {"id":"chat_1","model":"gemini-3.8-flash","created":1,"choices":[],"usage":
+                """ + usage + "}", "[DONE]") : FixtureHost.Sse(finish, "[DONE]");
+        }, liveProviders: true);
+
+        var body = await Post(host, "/v1/chat/completions", PricedModel, stream, includeUsage);
+        var frames = stream ? Frames(body) : [JsonNode.Parse(body)!];
+        if (!stream || includeUsage)
+        {
+            var result = Assert.Single(frames, node => node["usage"] is not null);
+            Assert.Equal(140, (int?)result["usage"]?["total_tokens"]);
+            AssertEstimate(result["metadata"]?["gateway"]);
+        }
+        else
+        {
+            Assert.All(frames, node =>
+            {
+                Assert.Null(node["usage"]);
+                Assert.Null(node["metadata"]?["gateway"]?["cost"]);
+            });
+        }
+        Assert.Single(host.Requests);
+    }
 
     [Theory]
     [InlineData("/api/chat", """{"model":"google/gemini-3-flash","messages":[{"id":"u1","role":"user","parts":[{"type":"text","text":"Hello"}]}]}""", "text-delta")]
@@ -138,6 +286,42 @@ public sealed class GoogleInteractionsTests
             { ["type"] = "tool_result", ["tool_use_id"] = (string?)message["content"]![0]!["id"], ["content"] = "Found" }) });
         using var second = await host.PostAsync("/v1/messages", request.ToJsonString(), ("x-google-key", "gemini-test"));
         Assert.Contains("From Gemini", await GatewayTests.Success(second));
+    }
+
+    private static async Task<string> Post(FixtureHost host, string route, string model, bool stream, bool includeUsage = false)
+    {
+        var request = GatewayTests.Request(route, model, stream);
+        if (includeUsage) request["stream_options"] = new JsonObject { ["include_usage"] = true };
+        using var response = await host.PostAsync(route, request.ToJsonString(), ("x-google-key", "gemini-test"));
+        return await GatewayTests.Success(response);
+    }
+
+    private static string AnswerWithUsage(string? usage)
+    {
+        var answer = JsonNode.Parse(Answer)!;
+        answer["usage"] = usage is null ? null : JsonNode.Parse(usage);
+        return answer.ToJsonString();
+    }
+
+    private static string Completed(string answer) => "{\"event_type\":\"interaction.completed\",\"interaction\":" + answer + "}";
+
+    private static JsonNode[] Frames(string sse) => sse.Split('\n').Where(line => line.StartsWith("data: {", StringComparison.Ordinal))
+        .Select(line => JsonNode.Parse(line[6..])!).ToArray();
+
+    private static JsonNode FinishMetadata(string sse) => Assert.Single(Frames(sse), node => (string?)node["type"] == "finish")["messageMetadata"]!;
+
+    private static void AssertVercelUsage(JsonNode metadata)
+    {
+        Assert.Equal(100, (int?)metadata["usage"]?["promptTokens"]);
+        Assert.Equal(40, (int?)metadata["usage"]?["completionTokens"]);
+        Assert.Equal(140, (int?)metadata["usage"]?["totalTokens"]);
+    }
+
+    private static void AssertEstimate(JsonNode? metrics)
+    {
+        Assert.Equal(Cost, (decimal?)metrics?["cost"]);
+        Assert.Equal("USD", (string?)metrics?["currency"]);
+        Assert.True((bool?)metrics?["estimated"]);
     }
 
     private static void AssertInteraction(FixtureHost.UpstreamRequest request, bool stream)
