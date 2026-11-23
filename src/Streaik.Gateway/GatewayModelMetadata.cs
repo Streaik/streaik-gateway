@@ -39,7 +39,7 @@ internal static partial class GatewayModelMetadata
 
     private static bool IsKnownLiveModel(string provider, string name) => provider switch
     {
-        "openai" => OpenAiLive().IsMatch(name),
+        "openai" => OpenAiLive().IsMatch(name) || OpenAiLiveTranscription().IsMatch(name),
         "google" => name.StartsWith("gemini-", StringComparison.Ordinal) &&
             (name.Contains("-live", StringComparison.Ordinal) || name.Contains("-native-audio", StringComparison.Ordinal)),
         "xai" => name == "grok-voice-latest",
@@ -68,6 +68,8 @@ internal static partial class GatewayModelMetadata
 
     [GeneratedRegex("^gpt-(?:4o-)?realtime(?:-|$)")]
     private static partial Regex OpenAiLive();
+    [GeneratedRegex("^gpt-live-transcribe(?:-\\d{4}-\\d{2}-\\d{2})?$")]
+    private static partial Regex OpenAiLiveTranscription();
     [GeneratedRegex("^(?:gpt-(?:3\\.5|4o|[4-9](?:\\.\\d+)?)|o[1-9])(?:-|$)")]
     private static partial Regex OpenAiLanguage();
     [GeneratedRegex("(?:^|[-_.])(?:search|vision)(?:[-_.]|$)")]
