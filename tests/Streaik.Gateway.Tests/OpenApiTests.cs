@@ -96,16 +96,16 @@ public sealed class OpenApiTests
 
         (string Name, string[] V1, string[] Api)[] expected =
         [
-            ("Chat & Responses", ["/v1/chat/completions", "/v1/responses", "/v1/messages"], ["/api/chat"]),
+            ("Chat", ["/v1/chat/completions", "/v1/responses", "/v1/messages"], ["/api/chat"]),
             ("Decisions", ["/v1/decisions"], ["/api/decisions"]),
             ("Images", ["/v1/images/generations", "/v1/images/edits"], ["/api/images"]),
             ("Videos", [], ["/api/videos", "/api/videos/{providerId}/{operation}"]),
             ("Speech", ["/v1/audio/speech"], ["/api/speech", "/api/speech/stream"]),
             ("Transcriptions", ["/v1/audio/transcriptions"], ["/api/transcriptions", "/api/transcriptions/stream"]),
-            ("Realtime & Live", ["/v1/realtime/client_secrets", "/v1/live/sessions"], ["/api/realtime/token/{model}", "/api/realtime/session/{model}"]),
+            ("Realtime", ["/v1/realtime/client_secrets", "/v1/live/sessions"], ["/api/realtime/token/{model}", "/api/realtime/session/{model}"]),
             ("Embeddings", ["/v1/embeddings"], ["/api/embeddings"]),
             ("Rerank", [], ["/api/rerank"]),
-            ("Model discovery", ["/v1/models"], []),
+            ("Discovery", ["/v1/models"], []),
             ("Skills", ["/v1/skills", "/v1/skills/providers", "/v1/skills/{providerId}/{skillId}/versions",
                 "/v1/skills/{providerId}/{skillId}/content", "/v1/skills/{providerId}/{skillId}/versions/{version}/content"], [])
         ];

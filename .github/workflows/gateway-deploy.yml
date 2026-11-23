@@ -91,7 +91,7 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build-test-publish
     runs-on: ubuntu-latest
-    environment: production
+    environment: streaik-production
     permissions:
       contents: read
       id-token: write
