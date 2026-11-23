@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Streaik.Gateway.Tests;
 
@@ -10,6 +11,73 @@ public sealed class MediaTests
 {
     private static readonly (string, string) ImageKey = ("X-ImageRouter-Key", "images-fixture");
     private const string ImageModel = "imagerouter/vendor/image";
+    private const string GeminiImageRequest = """
+        {"model":"google/gemini-2.5-flash-image","prompt":"simple afbeelding huis en een boom","n":1}
+        """;
+    private static readonly (string, string) GeminiKey = ("X-Google-Key", "gemini-fixture-key");
+
+    [Theory]
+    [InlineData("/v1/images/generations", false)]
+    [InlineData("/api/images", true)]
+    public async Task Google_generation_routes_send_a_Gemini_image_interaction(string path, bool vercel)
+    {
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""
+            {"steps":[{"type":"model_output","content":[{"type":"text","text":"Image follows."},
+              {"type":"image","mime_type":"image/jpeg","data":"AQID"}]}]}
+            """), liveProviders: true);
+        using var response = await host.PostAsync(path, GeminiImageRequest, GeminiKey);
+        var body = JsonNode.Parse(await GatewayTests.Success(response))!;
+        var request = Assert.Single(host.Requests);
+        Assert.Equal("generativelanguage.googleapis.com", request.Host);
+        Assert.Equal("POST", request.Method);
+        Assert.Equal("/v1beta/interactions", request.Path);
+        Assert.Equal(GeminiKey.Item2, request.Headers["x-goog-api-key"]);
+        Assert.Equal("application/json", request.Headers["Accept"]);
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""
+            {"model":"gemini-2.5-flash-image","input":[{"type":"text","text":"simple afbeelding huis en een boom"}],
+             "response_format":{"type":"image","mime_type":"image/png"},"store":false}
+            """), request.Body), request.RawBody);
+        if (vercel) Assert.Equal("data:image/jpeg;base64,AQID", (string?)body["images"]![0]);
+        else
+        {
+            Assert.Equal("AQID", (string?)body["data"]![0]!["b64_json"]);
+            Assert.Equal("jpeg", (string?)body["output_format"]);
+        }
+    }
+
+    [Theory]
+    [InlineData("/api/images", true)]
+    [InlineData("/v1/images/generations", true)]
+    [InlineData("/v1/images/generations", false)]
+    public async Task Google_image_rejection_detail_is_debug_only_and_never_sent_to_the_client(string path, bool debug)
+    {
+        using var logs = new GeminiImageLogs();
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""
+            {"error":{"code":400,"message":"Fixture rejection for gemini-fixture-key\nwith detail.","status":"INVALID_ARGUMENT"}}
+            """, HttpStatusCode.BadRequest), liveProviders: true, configure: services => services.AddLogging(logging => logging.AddProvider(logs)
+            .AddFilter<GeminiImageLogs>("Streaik.Providers.GoogleGeminiProvider", debug ? LogLevel.Debug : LogLevel.Information)));
+        using var response = await host.PostAsync(path, GeminiImageRequest, GeminiKey);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("Fixture rejection", body);
+        Assert.DoesNotContain(GeminiKey.Item2, body);
+        if (debug)
+            Assert.Contains("Fixture rejection for [redacted] with detail.", Assert.Single(logs.Messages));
+        else Assert.Empty(logs.Messages);
+    }
+
+    private sealed class GeminiImageLogs : ILoggerProvider, ILogger
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<string> Messages { get; } = new();
+        public ILogger CreateLogger(string categoryName) => this;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => logLevel == LogLevel.Debug;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel)) Messages.Enqueue(formatter(state, exception));
+        }
+        public void Dispose() { }
+    }
 
     [Theory]
     [InlineData("/v1/chat/completions", false, "images")]
