@@ -31,7 +31,7 @@ See the [API documentation](https://ai.streaik.net/scalar) for endpoints, authen
 ## Run standalone on Windows
 
 Run the gateway standalone on your own Windows machine. Download the latest standalone Windows x64 build:
-[aihappey-windows-x64.zip](https://github.com/Streaik/streaik-gateway/releases/download/latest/streaik-windows-x64.zip)
+[streaik-windows-x64.zip](https://github.com/Streaik/streaik-gateway/releases/download/latest/streaik-windows-x64.zip)
 
 Provider credentials are loaded from: `%LOCALAPPDATA%\streaik\headers.json`  
 Example: `{"X-OpenAI-Key":"sk-...","X-Anthropic-Key":"sk-ant-..."}`
