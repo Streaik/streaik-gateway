@@ -146,8 +146,9 @@ public static partial class StreaikGateway
         if (request.Size is not null) body["size"] = request.Size;
         if (request.N is { } n) body["n"] = n;
         // Segmind's native fields take precedence over the Vercel convenience defaults.
-        if (request.AspectRatio is not null && (call.ProviderId != "segmind" || !body.ContainsKey("aspect_ratio"))) body["aspect_ratio"] = request.AspectRatio;
-        if (request.Seed is { } seed && (call.ProviderId != "segmind" || !body.ContainsKey("seed"))) body["seed"] = seed;
+        var clarifai = call.ProviderId == "clarifai";
+        if (!clarifai && request.AspectRatio is not null && (call.ProviderId != "segmind" || !body.ContainsKey("aspect_ratio"))) body["aspect_ratio"] = request.AspectRatio;
+        if (!clarifai && request.Seed is { } seed && (call.ProviderId != "segmind" || !body.ContainsKey("seed"))) body["seed"] = seed;
         OpenAIImagesResponse result;
         if (files is { Length: > 0 })
         {
@@ -159,15 +160,18 @@ public static partial class StreaikGateway
         else
         {
             var generation = BindImageSettings<OpenAIImageGenerationRequest>(body);
-            if (call.ProviderId == "openai" && call.NativeModel is "dall-e-2" or "dall-e-3") generation.ResponseFormat = "b64_json";
+            if (clarifai || call.ProviderId == "openai" && call.NativeModel is "dall-e-2" or "dall-e-3") generation.ResponseFormat = "b64_json";
             result = await provider.GenerateImageAsync(generation, call.Headers, call.Ct);
         }
+        var providerWarnings = result.AdditionalProperties?.GetValueOrDefault("warnings") is { ValueKind: JsonValueKind.Array } warnings
+            ? warnings.EnumerateArray().Select(static item => (object)item).ToList() : [];
+        if (clarifai && request.Seed.HasValue) providerWarnings.Add(new { type = "unsupported", feature = "seed" });
+        if (clarifai && !string.IsNullOrWhiteSpace(request.AspectRatio)) providerWarnings.Add(new { type = "unsupported", feature = "aspectRatio" });
         await context.Response.WriteAsJsonAsync(new ImageResponse
         {
             Images = result.Data?.Select(item => VercelImageData(item, result.OutputFormat, call.ProviderId == "digitalocean")).ToArray(),
             ProviderMetadata = ImageAdapters.ProviderMetadata(result, call.ProviderId),
-            Warnings = result.AdditionalProperties?.GetValueOrDefault("warnings") is { ValueKind: JsonValueKind.Array } warnings
-                ? warnings.EnumerateArray().Select(static item => (object)item).ToArray() : [],
+            Warnings = providerWarnings,
             Response = new() { ModelId = call.Model, Timestamp = DateTime.UtcNow },
             Usage = result.Usage is { } usage ? new() { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens, TotalTokens = usage.TotalTokens } : null
         }, Web, call.Ct);

@@ -49,7 +49,8 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddNscale().AddDigitalOcean().AddSpeechify()
     .AddCloudRift().AddCoralBricks().AddAudixa()
     .AddCrusoe().AddAtlasCloud().AddDeepdub()
-    .AddDoubleword().AddBananaPeel().AddCreora().AddStreaikReferences();
+    .AddDoubleword().AddBananaPeel().AddCreora()
+    .AddAkumi().AddClarifai().AddBespokeLabs().AddStreaikReferences();
 await VaultProviderKeys.LoadAsync(builder);
 
 var app = builder.Build();
