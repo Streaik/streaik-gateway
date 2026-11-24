@@ -40,7 +40,8 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddMoonshot().AddJina().AddBlackForestLabs().AddChutes().AddPinecone().AddRecraft()
     .AddArliAI().AddCartesia().AddCeleris().AddBaseten().AddCohere().AddBria()
     .AddCencori().AddDecart().AddElevenLabs()
-    .AddNebius().AddNomic().AddIdeogram().AddStreaikReferences();
+    .AddNebius().AddNomic().AddIdeogram()
+    .AddHuggingFace().AddMixedbread().AddSegmind().AddStreaikReferences();
 await VaultProviderKeys.LoadAsync(builder);
 
 var app = builder.Build();

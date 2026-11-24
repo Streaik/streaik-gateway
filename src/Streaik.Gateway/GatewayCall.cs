@@ -33,8 +33,8 @@ internal sealed class GatewayCall
     public string NativeModel { get; }
     public IReadOnlyDictionary<string, string> Headers { get; }
     public CancellationToken Ct => Context.RequestAborted;
-    // Nebius exposes native Responses explicitly, but its translated turns use the Chat Completions backend.
-    public bool PreferChatBridge => ProviderId == "nebius";
+    // These providers expose native Responses explicitly, but translated turns use Chat Completions.
+    public bool PreferChatBridge => ProviderId is "nebius" or "mixedbread";
     public T? Get<T>() where T : class => Context.RequestServices.GetKeyedService<T>(ProviderId);
     public IChatCompletionsProvider? GetChatBridge() => Get<IChatBridgeProvider>()?.ChatBridge ?? Get<IChatCompletionsProvider>();
     public T Require<T>() where T : class => Get<T>() ?? throw new ContractException("Provider does not support this protocol.");

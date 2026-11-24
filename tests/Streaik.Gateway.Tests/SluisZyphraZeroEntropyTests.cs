@@ -36,10 +36,16 @@ public sealed class SluisZyphraZeroEntropyTests
 
         using var keyed = await host.GetAsync("/v1/models", SluisKey, ZyphraKey);
         var models = JsonNode.Parse(await GatewayTests.Success(keyed))!["data"]!.AsArray();
-        Assert.Single(models, item => (string?)item?["id"] == "sluis/sluis/auto");
+        Assert.Null(Assert.Single(models, item => (string?)item?["id"] == "sluis/sluis/auto")!["tags"]);
+        var agents = Assert.Single(models, item => (string?)item?["id"] == "sluis/sluis/agents")!;
+        Assert.Equal("agent", (string?)Assert.Single(agents["tags"]!.AsArray()));
+        var translate = Assert.Single(models, item => (string?)item?["id"] == "sluis/sluis/translate")!;
+        Assert.Equal("translate", (string?)Assert.Single(translate["tags"]!.AsArray()));
         Assert.Equal(32000, (int?)Assert.Single(models, item => (string?)item?["id"] == "sluis/vendor/model")!["context_window"]);
         Assert.Single(models, item => ((string?)item?["id"])?.Equals("zyphra/zyphra/ZONOS2/alloy", StringComparison.OrdinalIgnoreCase) == true);
-        Assert.Equal("speech", (string?)Assert.Single(models, item => (string?)item?["id"] == "zyphra/zyphra/ZONOS2/private")!["type"]);
+        var voice = Assert.Single(models, item => (string?)item?["id"] == "zyphra/zyphra/ZONOS2/private")!;
+        Assert.Equal("speech", (string?)voice["type"]);
+        Assert.Equal("voice", (string?)Assert.Single(voice["tags"]!.AsArray()));
 
         using var second = await host.GetAsync("/v1/models", ("x-zyphra-key", "second-key"));
         var secondModels = await GatewayTests.Success(second);

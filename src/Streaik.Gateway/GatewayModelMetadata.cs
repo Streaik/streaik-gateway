@@ -10,21 +10,20 @@ internal static partial class GatewayModelMetadata
         // Use the model name segment, not the provider or publisher namespace.
         var name = model.Id[(model.Id.LastIndexOf('/') + 1)..].ToLowerInvariant();
         var type = model.Type?.Trim().ToLowerInvariant();
-        var realtime = IsRealtime(type) || IsKnownLiveModel(provider, name);
-        var tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Providers assign tags locally. Enforce the public vocabulary on every listing.
+        var tags = new HashSet<string>(StringComparer.Ordinal);
         foreach (var raw in model.Tags ?? [])
         {
-            if (string.IsNullOrWhiteSpace(raw)) continue;
-            var tag = raw.Trim();
-            if (IsRealtime(tag.ToLowerInvariant())) realtime = true;
-            else tags.Add(tag);
+            var tag = raw?.Trim().ToLowerInvariant();
+            if (IsRealtime(tag)) tags.Add("realtime");
+            else if (tag is "agent" or "voice" or "translate") tags.Add(tag);
         }
 
-        if (realtime) tags.Add("realtime");
+        if (IsRealtime(type) || IsKnownLiveModel(provider, name)) tags.Add("realtime");
         model.Tags = tags.Count > 0 ? tags.ToArray() : null;
         model.Type = type switch
         {
-            null or "" or "model" => Infer(provider, name, realtime),
+            null or "" or "model" => Infer(provider, name, tags.Contains("realtime")),
             "chat" or "text" or "llm" => "language",
             "embeddings" => "embedding",
             "rerank" => "reranking",
@@ -63,7 +62,7 @@ internal static partial class GatewayModelMetadata
         if (provider == "google" && name.StartsWith("gemini-", StringComparison.Ordinal)) return "language";
         if (provider == "xai" && name.StartsWith("grok-", StringComparison.Ordinal) && !XaiNonChat().IsMatch(name)) return "language";
         // These adapters use chat-oriented listings; special-purpose IDs above still take precedence.
-        return provider is "cencori" or "cerebras" or "chutes" or "deepseek" or "groq" or "nebius" ? "language" : "other";
+        return provider is "cencori" or "cerebras" or "chutes" or "deepseek" or "groq" or "huggingface" or "nebius" ? "language" : "other";
     }
 
     [GeneratedRegex("^gpt-(?:4o-)?realtime(?:-|$)")]

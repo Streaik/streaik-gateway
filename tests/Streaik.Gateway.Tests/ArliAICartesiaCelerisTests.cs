@@ -19,27 +19,36 @@ public sealed class ArliAICartesiaCelerisTests
     {
         await using var host = await FixtureHost.StartAsync(request => (request.Host, request.Path) switch
         {
-            ("api.arliai.com", "/v1/models") => FixtureHost.Json("""{"data":[{"id":"vendor/chat"}]}"""),
+            ("api.arliai.com", "/v1/models") => FixtureHost.Json("""{"data":[{"id":"vendor/chat","tags":["agent","realtime","provider-tag"]}]}"""),
             ("api.arliai.com", "/v1/models/image-models") => FixtureHost.Json("""{"models":[{"model_name":"custom-checkpoint"}]}"""),
-            ("inference.celeris.ai", "/celeris-1/v1/models") => FixtureHost.Json("""{"data":[{"id":"celeris-1","name":"Native Celeris"}]}"""),
-            ("inference.celeris.ai", "/celeris-1-decision/v1/models") => FixtureHost.Json("""{"data":[{"id":"celeris-1-decision"}]}"""),
+            ("inference.celeris.ai", "/celeris-1/v1/models") => FixtureHost.Json("""{"data":[{"id":"celeris-1","name":"Native Celeris","tags":true}]}"""),
+            ("inference.celeris.ai", "/celeris-1-decision/v1/models") => FixtureHost.Json("""{"data":[{"id":"celeris-1-decision","tags":["agent","realtime","provider-tag"]}]}"""),
             ("api.cartesia.ai", "/voices?limit=100") => FixtureHost.Json("""{"data":[{"id":"voice-1"}],"has_more":true,"next_page":"cursor+2"}"""),
-            ("api.cartesia.ai", "/voices?limit=100&starting_after=cursor%2B2") => FixtureHost.Json("""{"data":[{"id":"voice-2","language":"en"}]}"""),
+            ("api.cartesia.ai", "/voices?limit=100&starting_after=cursor%2B2") => FixtureHost.Json("""{"data":[{"id":"voice-2","language":"en","gender":"female"}]}"""),
             ("api.cartesia.ai", "/v1/agents?limit=100") => FixtureHost.Json("""{"data":[{"id":"agent-1","name":"Service"}]}"""),
             _ => throw new InvalidOperationException(request.Path)
         }, arliAICartesiaCeleris: true);
         using var response = await host.GetAsync("/v1/models", Arli, Cartesia, Celeris);
-        var models = (await Json(response))["data"]!.AsArray().ToDictionary(model => (string)model!["id"]!, model => (string)model!["type"]!);
-        Assert.Equal("language", models["arliai/vendor/chat"]);
-        Assert.Equal("image", models["arliai/custom-checkpoint"]);
-        Assert.Equal("decision", models["celeris/celeris-1.1-decision"]);
-        Assert.Equal("speech", models["cartesia/tts/sonic-3.6/voice-2"]);
-        Assert.Equal("audio", models["cartesia/agents/agent-1"]);
-        Assert.Equal("transcription", models["cartesia/transcription/realtime/auto/ink-2"]);
+        var models = (await Json(response))["data"]!.AsArray().ToDictionary(model => (string)model!["id"]!, model => model!);
+        Check("arliai/vendor/chat", "language");
+        Check("arliai/custom-checkpoint", "image");
+        Check("celeris/celeris-1", "language");
+        Assert.Equal("Native Celeris", (string?)models["celeris/celeris-1"]["name"]);
+        Check("celeris/celeris-1.1-decision", "decision");
+        Check("cartesia/tts/sonic-3.6/voice-2", "speech", "voice");
+        Check("cartesia/agents/agent-1", "audio", "agent", "realtime");
+        Check("cartesia/transcription/realtime/auto/ink-2", "transcription", "realtime");
         Assert.All(host.Requests, request => Assert.Equal("Bearer fixture-" + (request.Host switch
         {
             "api.arliai.com" => "arli", "inference.celeris.ai" => "celeris", "api.cartesia.ai" => "cartesia", _ => "unknown"
         }), request.Headers["Authorization"]));
+
+        void Check(string id, string type, params string[] tags)
+        {
+            Assert.Equal(type, (string?)models[id]["type"]);
+            if (tags.Length == 0) Assert.Null(models[id]["tags"]);
+            else Assert.Equal(tags, models[id]["tags"]!.AsArray().Select(tag => (string)tag!).Order());
+        }
     }
 
     [Fact]

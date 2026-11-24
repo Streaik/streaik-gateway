@@ -33,6 +33,7 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddBaseten().AddCohere().AddBria()
     .AddCencori().AddDecart().AddElevenLabs()
     .AddNebius().AddNomic().AddIdeogram()
+    .AddHuggingFace().AddMixedbread().AddSegmind()
     .AddStreaikHeaderAuth().AddStreaikReferences();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))
     builder.Services.AddSingleton(new ToolApprovalSigner(secret));

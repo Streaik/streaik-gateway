@@ -133,7 +133,7 @@ public static partial class StreaikGateway
     {
         var request = await ReadAsync<ImageRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
-        if (call.ProviderId != "ideogram") Need(request.Prompt, "prompt");
+        if (call.ProviderId is not ("ideogram" or "segmind")) Need(request.Prompt, "prompt");
         var provider = call.Require<IImageProvider>();
         var files = request.Files?.Select(ImageReference).ToArray();
         if (request.Mask is not null && files is not { Length: > 0 }) throw new ContractException("A mask requires an image.");
@@ -145,8 +145,9 @@ public static partial class StreaikGateway
         body["prompt"] = request.Prompt;
         if (request.Size is not null) body["size"] = request.Size;
         if (request.N is { } n) body["n"] = n;
-        if (request.AspectRatio is not null) body["aspect_ratio"] = request.AspectRatio;
-        if (request.Seed is { } seed) body["seed"] = seed;
+        // Segmind's native fields take precedence over the Vercel convenience defaults.
+        if (request.AspectRatio is not null && (call.ProviderId != "segmind" || !body.ContainsKey("aspect_ratio"))) body["aspect_ratio"] = request.AspectRatio;
+        if (request.Seed is { } seed && (call.ProviderId != "segmind" || !body.ContainsKey("seed"))) body["seed"] = seed;
         OpenAIImagesResponse result;
         if (files is { Length: > 0 })
         {
@@ -178,7 +179,7 @@ public static partial class StreaikGateway
         var mediaType = format?.ToLowerInvariant() switch
         {
             "png" => "image/png", "jpeg" or "jpg" => "image/jpeg", "webp" => "image/webp",
-            "gif" => "image/gif", "svg" => "image/svg+xml", "avif" => "image/avif", _ => null
+            "gif" => "image/gif", "svg" => "image/svg+xml", "avif" => "image/avif", "bmp" => "image/bmp", _ => null
         };
         return mediaType is null || image.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ? image : $"data:{mediaType};base64,{image}";
     }

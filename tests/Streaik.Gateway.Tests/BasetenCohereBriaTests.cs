@@ -23,8 +23,16 @@ public sealed class BasetenCohereBriaTests
         await using var host = await FixtureHost.StartAsync(req => (req.Host, req.Path) switch
         {
             ("inference.baseten.co", "/v1/models") => FixtureHost.Json("""{"data":[{"id":"vendor/chat","name":"Vendor Chat","context_length":4096,"pricing":{"prompt":"0.001","completion":0.002}}]}"""),
-            ("api.cohere.com", "/v1/models?page_size=1000") => FixtureHost.Json("""{"models":[{"name":"embed-v4.0","features":["image"]}],"next_page_token":"next page"}"""),
-            ("api.cohere.com", "/v1/models?page_size=1000&page_token=next%20page") => FixtureHost.Json("""{"models":[{"name":"cohere-transcribe"},{"name":"parse-document"}]}"""),
+            ("api.cohere.com", "/v1/models?page_size=1000") => FixtureHost.Json("""
+                {"models":[{"name":"embed-v4.0","features":["image"]},
+                  {"name":"command-a-03-2025","context_length":288000,"description":"Command A","features":["json_mode","tools","agent","translate"],"endpoints":["chat","realtime"]},
+                  {"name":"command-a-translate-08-2025","features":["translate","voice"],"endpoints":["chat"]}],"next_page_token":"next page"}
+                """),
+            ("api.cohere.com", "/v1/models?page_size=1000&page_token=next%20page") => FixtureHost.Json("""
+                {"models":[{"name":"cohere-transcribe"},{"name":"parse-document"},
+                  {"name":"sort-v1","endpoints":["rerank"]},{"name":"vector-v1","endpoints":["embed"]},
+                  {"name":"record-v1","endpoints":["transcriptions"]}]}
+                """),
             _ => throw new InvalidOperationException(req.Path)
         }, basetenCohereBria: true);
         using var anonymous = await host.GetAsync("/v1/models");
@@ -36,6 +44,18 @@ public sealed class BasetenCohereBriaTests
         Assert.Equal("decision", (string?)models["baseten/" + SystemOneModel]!["type"]);
         Assert.Equal("embedding", (string?)models["cohere/embed-v4.0"]!["type"]);
         Assert.Equal("transcription", (string?)models["cohere/cohere-transcribe"]!["type"]);
+        Assert.Equal("reranking", (string?)models["cohere/sort-v1"]!["type"]);
+        Assert.Equal("embedding", (string?)models["cohere/vector-v1"]!["type"]);
+        Assert.Equal("transcription", (string?)models["cohere/record-v1"]!["type"]);
+        var command = models["cohere/command-a-03-2025"]!;
+        Assert.Equal("language", (string?)command["type"]);
+        Assert.Equal(288000, (int?)command["context_window"]);
+        Assert.Equal("Command A", (string?)command["description"]);
+        const string translateId = "cohere/command-a-translate-08-2025";
+        Assert.Equal("language", (string?)models[translateId]!["type"]);
+        Assert.Equal("translate", (string?)Assert.Single(models[translateId]!["tags"]!.AsArray()));
+        Assert.All(models.Where(pair => pair.Key.StartsWith("cohere/", StringComparison.Ordinal) && pair.Key != translateId),
+            pair => Assert.Null(pair.Value!["tags"]));
         Assert.Equal("video", (string?)models["bria/video/edit/erase"]!["type"]);
         Assert.All(host.Requests, req => Assert.Equal(req.Host == "api.cohere.com" ? "Bearer cohere-key" : "Bearer baseten-key", req.Headers["Authorization"]));
     }
