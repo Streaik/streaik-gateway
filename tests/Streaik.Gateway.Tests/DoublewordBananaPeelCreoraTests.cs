@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Streaik.Gateway.Tests;
@@ -55,13 +56,12 @@ public sealed class DoublewordBananaPeelCreoraTests
         var upstreamPath = banana && path == "/v1/chat/completions" ? "/v1/responses" : path;
         await using var host = await FixtureHost.StartAsync(request => FixtureHost.Reply(request with { Path = upstreamPath }), doublewordBananaPeelCreora: true);
         var nativeModel = banana ? "banana-peel" : "vendor/Model";
-        var input = path == "/v1/responses" ? "\"input\":\"hello\"" : "\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]";
+        var input = path == "/v1/responses" ? "\"input\":\"hello\"" : "\"max_tokens\":24,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]";
         var body = $$"""
-            {"model":"{{provider}}/{{nativeModel}}","stream":{{(stream ? "true" : "false")}},"max_tokens":24,{{input}},
+            {"model":"{{provider}}/{{nativeModel}}","stream":{{(stream ? "true" : "false")}},{{input}},
              "{{provider}}":{"MODEL":"override","stream":{{(stream ? "false" : "true")}},"store":true,"background":true,"previous_response_id":"invalid",
-             "authorization":"override","future":{"tags":[true,null,{"mode":"exact"}]}}}
+             "authorization":"override","future":{"tags":[true,null,{"mode":"exact"}]} } }
             """;
-        if (path == "/v1/responses") body = body.Replace("\"max_tokens\":24,", "", StringComparison.Ordinal);
         var key = banana ? BananaPeel : Doubleword;
         using var response = await host.PostAsync(path, body, key, ("anthropic-version", "2023-06-01"));
         Assert.Contains(outputMarker, await GatewayTests.Success(response));
@@ -90,7 +90,7 @@ public sealed class DoublewordBananaPeelCreoraTests
             doublewordBananaPeelCreora: true);
         using var response = await host.PostAsync("/api/chat", $$"""
             {"model":"{{provider}}/{{model}}","messages":[{"id":"m","role":"user","parts":[{"type":"text","text":"go"}]}],
-             "providerMetadata":{"{{provider}}":{"model":"ignored","native_tune":{"deep":[0,false]}}}}
+             "providerMetadata":{"{{provider}}":{"model":"ignored","native_tune":{"deep":[0,false]} } } }
             """, Doubleword, BananaPeel, Creora);
         var result = await GatewayTests.Success(response);
         Assert.Contains("hello", result);
@@ -116,7 +116,7 @@ public sealed class DoublewordBananaPeelCreoraTests
             """, Doubleword);
         var metadata = (await Json(vercel))["response"]!;
         Assert.True((bool?)metadata["body"]!["future"]!["raw"]![0]);
-        Assert.Equal("port-test", (string?)metadata["headers"]!["x-request-id"]);
+        Assert.Equal("port-test", (string?)Assert.Single(metadata["headers"]!.AsObject(), pair => pair.Key.Equals("x-request-id", StringComparison.OrdinalIgnoreCase)).Value);
         Assert.DoesNotContain("secret-cookie", metadata.ToJsonString());
         Assert.All(host.Requests, request =>
         {
@@ -125,6 +125,24 @@ public sealed class DoublewordBananaPeelCreoraTests
         });
         Assert.Equal(10, (int?)host.Requests.First().Body!["input"]![0]![0]);
         Assert.Equal("one", (string?)host.Requests.Last().Body!["input"]![0]);
+    }
+
+    [Fact]
+    public async Task Creora_buffered_chat_keeps_native_tools_and_safe_response_metadata()
+    {
+        await using var host = await FixtureHost.StartAsync(request => WithHeaders(FixtureHost.Reply(request with { Path = "/v1/chat/completions" })),
+            doublewordBananaPeelCreora: true);
+        using var response = await host.PostAsync("/v1/chat/completions", """
+            {"model":"creora/creora-network","messages":[{"role":"user","content":"go"}],
+             "creora":{"tools":[{"type":"native_tool","settings":{"depth":2}}],"model":"ignore"}}
+            """, Creora);
+        var metadata = (await Json(response))["providerMetadata"]!["creora"]!;
+        Assert.True((bool?)metadata["response"]!["future_response"]);
+        Assert.DoesNotContain("secret-cookie", metadata.ToJsonString());
+        var request = Assert.Single(host.Requests);
+        Check(request, "creora.ai", "/api/v1/chat/completions", Creora);
+        Assert.Equal("creora-network", (string?)request.Body!["model"]);
+        Assert.Equal(2, (int?)request.Body["tools"]![0]!["settings"]!["depth"]);
     }
 
     [Fact]
@@ -173,7 +191,7 @@ public sealed class DoublewordBananaPeelCreoraTests
             }),
             "/api/v1/videos/job1/content" => new(HttpStatusCode.OK) { Content = new ByteArrayContent([1, 2, 3]) { Headers = { ContentType = new MediaTypeHeaderValue("video/mp4") } } },
             _ => throw new InvalidOperationException(request.Path)
-        }, doublewordBananaPeelCreora: true);
+        }, configure: services => services.AddStreaikReferences(), doublewordBananaPeelCreora: true);
 
         using var start = await host.PostAsync("/api/videos", """
             {"model":"creora/creora-video","prompt":"move","duration":3,"providerOptions":{"creora":{"MODEL":"ignore","prompt":"ignore","motion":{"speed":2}}}}
@@ -193,13 +211,15 @@ public sealed class DoublewordBananaPeelCreoraTests
         Assert.Equal("quota", (string?)(await Json(failed))["providerMetadata"]!["creora"]!["error"]!["code"]);
         Assert.Equal("creora-video", (string?)host.Requests.First().Body!["model"]);
         Assert.Equal(2, (int?)host.Requests.First().Body!["motion"]!["speed"]);
+        Assert.Equal(new[] { "/api/v1/videos", "/api/v1/videos/job1", "/api/v1/videos/job1", "/api/v1/videos/job1/content", "/api/v1/videos/job1" },
+            host.Requests.Select(request => request.Path));
         Assert.All(host.Requests, request => Check(request, "creora.ai", request.Path, Creora));
     }
 
     [Fact]
     public async Task Creora_rejects_unsupported_reference_inputs_without_contacting_upstream()
     {
-        await using var host = await FixtureHost.StartAsync(doublewordBananaPeelCreora: true);
+        await using var host = await FixtureHost.StartAsync(configure: services => services.AddStreaikReferences(), doublewordBananaPeelCreora: true);
         using var video = await host.PostAsync("/api/videos", """
             {"model":"creora/creora-video","prompt":"move","image":{"type":"url","url":"https://example.com/reference.png"}}
             """, Creora);
