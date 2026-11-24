@@ -127,8 +127,9 @@ public sealed class AkumiClarifaiBespokeLabsTests
         var reply = await Json(sdk);
         Assert.True((bool?)reply["response"]!["body"]!["diagnostics"]!["flags"]![0]);
         Assert.Equal("fast", (string?)reply["response"]!["body"]!["data"]![0]!["details"]!["tier"]);
-        Assert.Equal("request-fixture", (string?)reply["response"]!["headers"]!["x-request-id"]);
-        Assert.Null(reply["response"]!["headers"]!["x-private"]);
+        var headers = reply["response"]!["headers"]!.AsObject();
+        Assert.Equal("request-fixture", (string?)Assert.Single(headers, header => header.Key.Equals("x-request-id", StringComparison.OrdinalIgnoreCase)).Value);
+        Assert.DoesNotContain(headers, header => header.Key.Equals("x-private", StringComparison.OrdinalIgnoreCase));
         Assert.Equal("hello", (string?)host.Requests.Last().Body!["input"]![0]);
         Assert.All(host.Requests, request =>
         {
