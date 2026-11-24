@@ -1,7 +1,11 @@
 using System.Text.Json;
 using Streaik.ChatCompletions.Models;
+using Streaik.Messages;
 using Streaik.OpenAI.Models;
 using Streaik.Providers;
+using Streaik.Responses;
+using Streaik.Responses.Output;
+using Streaik.Responses.Streaming;
 using Streaik.Vercel.Models;
 
 namespace Streaik.Gateway;
@@ -155,6 +159,77 @@ public static partial class StreaikGateway
         FinishUIPart Finish(Dictionary<string, JsonElement>? metadata) => new() { FinishReason = "stop", MessageMetadata = new()
             { Model = call.Model, Timestamp = DateTimeOffset.UtcNow, Usage = new(), ProviderMetadata = metadata } };
     }
+
+    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId == "typecast"
+        && call.Get<IChatAudioRoutingProvider>()?.IsSpeechModel(call.NativeModel) == true;
+
+    private static async Task SpeechViaResponsesAsync(GatewayCall call, ResponseRequest request)
+    {
+        if (request.Tools?.Any() == true || request.Reasoning is not null || request.Text is not null)
+            throw new ContractException("Speech Responses require text input without tools, reasoning, or structured output.", 422);
+        var content = request.Input?.Items?.OfType<ResponseInputMessage>().LastOrDefault(x => x.Role == ResponseRole.User)?.Content;
+        if (content?.Parts?.Any(part => part is not InputTextPart) == true)
+            throw new ContractException("Speech turns require text input only.", 422);
+        var text = request.Input?.Text ?? content?.Text ?? string.Concat((content?.Parts ?? []).OfType<InputTextPart>().Select(x => x.Text));
+        var (audio, mime, metadata) = await ReadInlineSpeechAsync(call, new() { Model = call.NativeModel, Input = text,
+            AdditionalProperties = request.AdditionalProperties });
+        var id = $"resp_{Guid.NewGuid():N}";
+        var itemId = $"msg_{Guid.NewGuid():N}";
+        var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var file = new InputFilePart { Filename = SpeechFileName(mime), FileData = $"data:{mime};base64,{audio}",
+            AdditionalProperties = new() { ["media_type"] = JsonSerializer.SerializeToElement(mime) } }.ToOutputContent();
+        ResponseOutputMessage Item(bool done) => new() { Id = itemId, Role = ResponseRole.Assistant, Status = done ? "completed" : "in_progress",
+            Content = done ? [file] : [] };
+        ResponseResult Result(bool done) => new() { Id = id, CreatedAt = created, Status = done ? "completed" : "in_progress",
+            Output = done ? [Item(true)] : [], Metadata = done ? metadata?.ToDictionary(x => x.Key, x => (object?)x.Value) : null };
+        if (request.Stream == true) await call.WriteResponsesStreamAsync(Parts());
+        else await call.WriteAsync(Result(true));
+
+        async IAsyncEnumerable<ResponseStreamPart> Parts()
+        {
+            await Task.CompletedTask;
+            yield return new ResponseCreated { SequenceNumber = 0, Response = Result(false) };
+            yield return new ResponseOutputItemAdded { SequenceNumber = 1, OutputIndex = 0, Item = StreamItem(false) };
+            yield return new ResponseOutputItemDone { SequenceNumber = 2, OutputIndex = 0, Item = StreamItem(true) };
+            yield return new ResponseCompleted { SequenceNumber = 3, Response = Result(true) };
+        }
+
+        ResponseStreamItem StreamItem(bool done) => JsonSerializer.SerializeToElement(Item(done), ResponseJson.Default)
+            .Deserialize<ResponseStreamItem>(ResponseJson.Default)!;
+    }
+
+    private static async Task SpeechViaMessagesAsync(GatewayCall call, MessagesRequest request)
+    {
+        if (request.Tools?.Count > 0 || request.Thinking is not null || request.OutputConfig is not null)
+            throw new ContractException("Speech Messages require text input without tools, thinking, or structured output.", 422);
+        var content = (request.Messages?.LastOrDefault(x => x.Role == "user")
+            ?? throw new ContractException("A speech turn requires a user message.")).Content;
+        if (content.IsRaw || content.Blocks?.Any(part => part.Type != "text") == true)
+            throw new ContractException("Speech turns require text input only.", 422);
+        var text = content.Text ?? string.Concat((content.Blocks ?? []).Select(x => x.Text));
+        var (audio, mime, metadata) = await ReadInlineSpeechAsync(call, new() { Model = call.NativeModel, Input = text,
+            AdditionalProperties = request.AdditionalProperties });
+        var id = $"msg_{Guid.NewGuid():N}";
+        // Match the legacy attachment representation rather than introducing a Messages audio block type.
+        var file = new MessageContentBlock { Type = "document", Title = SpeechFileName(mime),
+            Source = new() { Type = "text", Data = $"data:{mime};base64,{audio}", MediaType = mime } };
+        MessagesResponse Result(bool done) => new() { Id = id, Type = "message", Role = "assistant",
+            Content = done ? [file] : [], StopReason = done ? "end_turn" : null, Metadata = done ? metadata : null };
+        if (request.Stream == true) await call.WriteMessagesStreamAsync(Parts());
+        else await call.WriteAsync(Result(true));
+
+        async IAsyncEnumerable<MessageStreamPart> Parts()
+        {
+            await Task.CompletedTask;
+            yield return new() { Type = "message_start", Message = Result(false) };
+            yield return new() { Type = "content_block_start", Index = 0, ContentBlock = file };
+            yield return new() { Type = "content_block_stop", Index = 0 };
+            yield return new() { Type = "message_delta", Delta = new() { StopReason = "end_turn" } };
+            yield return new() { Type = "message_stop", Metadata = metadata };
+        }
+    }
+
+    private static string SpeechFileName(string mime) => $"speech.{(mime is "audio/mpeg" or "audio/mp3" ? "mp3" : "wav")}";
 
     private static async Task<(string Base64, string MediaType, Dictionary<string, JsonElement>? Metadata)> ReadInlineSpeechAsync(GatewayCall call, AudioSpeechRequest request)
     {

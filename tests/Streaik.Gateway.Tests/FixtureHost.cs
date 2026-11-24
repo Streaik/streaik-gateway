@@ -45,7 +45,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         Action<WebApplication>? configureApp = null, bool decisions = false, bool gladia = false, bool portedProviders = false,
         bool sluisZyphraZeroEntropy = false, bool moonshotJinaBlackForestLabs = false, bool chutesPineconeRecraft = false,
         bool arliAICartesiaCeleris = false, bool basetenCohereBria = false, bool cencoriDecartElevenLabs = false,
-        bool nebiusNomicIdeogram = false, bool huggingFaceMixedbreadSegmind = false)
+        bool nebiusNomicIdeogram = false, bool huggingFaceMixedbreadSegmind = false, bool tetrateUpstageTypecast = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -67,6 +67,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (cencoriDecartElevenLabs) builder.Services.AddCencori().AddDecart().AddElevenLabs();
         if (nebiusNomicIdeogram) builder.Services.AddNebius().AddNomic().AddIdeogram();
         if (huggingFaceMixedbreadSegmind) builder.Services.AddHuggingFace().AddMixedbread().AddSegmind();
+        if (tetrateUpstageTypecast) builder.Services.AddTetrate().AddUpstage().AddTypecast();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -84,6 +85,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (cencoriDecartElevenLabs) ids.AddRange(["cencori", "decart", "elevenlabs"]);
         if (nebiusNomicIdeogram) ids.AddRange(["nebius", "nomic", "ideogram", "ideogram-assets"]);
         if (huggingFaceMixedbreadSegmind) ids.AddRange(["huggingface", "mixedbread", "segmind"]);
+        if (tetrateUpstageTypecast) ids.AddRange(["tetrate", "upstage", "typecast"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

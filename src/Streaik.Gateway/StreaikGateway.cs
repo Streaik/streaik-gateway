@@ -115,6 +115,7 @@ public static partial class StreaikGateway
             throw new ContractException("Streaik Responses require inline history and do not support stored or background responses.");
         request.Store = false;
         request.Model = call.NativeModel;
+        if (UseSpeechFileAdapter(call)) { await SpeechViaResponsesAsync(call, request); return; }
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ResponsesAsync(call, request, image); return; }
         if (call.Get<IResponsesProvider>() is not { } native)
         {
@@ -135,6 +136,7 @@ public static partial class StreaikGateway
         var request = await ReadAsync<MessagesRequest>(context, MessagesJson.Default);
         var call = new GatewayCall(context, request.Model);
         request.Model = call.NativeModel;
+        if (UseSpeechFileAdapter(call)) { await SpeechViaMessagesAsync(call, request); return; }
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.MessagesAsync(call, request, image); return; }
         if (call.Get<IMessagesProvider>() is not { } native)
         {
