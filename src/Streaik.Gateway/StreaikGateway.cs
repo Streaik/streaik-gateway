@@ -118,6 +118,7 @@ public static partial class StreaikGateway
         request.Store = false;
         request.Model = call.NativeModel;
         if (UseSpeechFileAdapter(call)) { await SpeechViaResponsesAsync(call, request); return; }
+        if (UseTranscriptionFileAdapter(call)) { await TranscriptionViaResponsesAsync(call, request); return; }
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ResponsesAsync(call, request, image); return; }
         if (call.Get<IResponsesProvider>() is not { } native)
         {
@@ -139,6 +140,7 @@ public static partial class StreaikGateway
         var call = new GatewayCall(context, request.Model);
         request.Model = call.NativeModel;
         if (UseSpeechFileAdapter(call)) { await SpeechViaMessagesAsync(call, request); return; }
+        if (UseTranscriptionFileAdapter(call)) { await TranscriptionViaMessagesAsync(call, request); return; }
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.MessagesAsync(call, request, image); return; }
         if (call.Get<IMessagesProvider>() is not { } native)
         {

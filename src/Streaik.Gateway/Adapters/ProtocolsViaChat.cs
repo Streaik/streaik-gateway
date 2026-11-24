@@ -3,6 +3,7 @@ using Streaik.ChatCompletions.Models;
 using Streaik.Messages;
 using Streaik.Providers;
 using Streaik.Responses;
+using Streaik.Vercel.Models;
 
 namespace Streaik.Gateway;
 
@@ -32,13 +33,41 @@ internal static partial class ProtocolAdapters
         {
             var completion = await provider.CompleteChatAsync(native, call.Headers, call.Ct);
             var message = ChatCompletionsBridge.Result(completion, metadataProvider);
-            var result = ResponseResultFrom(message.Id!, completion.Created > 0 ? completion.Created : DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                message.Content.Select((block, index) => OutputItem(message.Id!, index, block)).ToList(), message.Usage, message.StopReason);
-            result.Model = message.Model ?? call.NativeModel;
-            AttachProviderMetadata(result, message.Metadata, metadataProvider);
-            GatewayPricing.Attach(result, GatewayPricing.Cost(message.Metadata));
-            await call.WriteAsync(result);
+            await WriteMessageAsResponseAsync(call, message, completion.Created, metadataProvider);
         }
+    }
+
+    internal static async Task WriteTranscriptAsync(GatewayCall call, TranscriptionResponse transcript, bool stream, bool responses)
+    {
+        var id = $"msg_{Guid.NewGuid():N}";
+        var text = new MessageContentBlock { Type = "text", Text = transcript.Text };
+        MessagesResponse Message(bool complete) => new() { Id = id, Type = "message", Role = "assistant", Model = call.NativeModel,
+            Content = complete ? [text] : [], StopReason = complete ? "end_turn" : null, Metadata = complete ? transcript.ProviderMetadata : null };
+        if (stream && responses) await call.WriteResponsesStreamAsync(ResponseUpdates(Parts(), call.ProviderId));
+        else if (stream) await call.WriteMessagesStreamAsync(Parts());
+        else if (responses) await WriteMessageAsResponseAsync(call, Message(true), 0, call.ProviderId);
+        else await call.WriteAsync(Message(true));
+
+        async IAsyncEnumerable<MessageStreamPart> Parts()
+        {
+            await Task.CompletedTask;
+            yield return new() { Type = "message_start", Message = Message(false) };
+            yield return new() { Type = "content_block_start", Index = 0, ContentBlock = new() { Type = "text", Text = "" } };
+            yield return new() { Type = "content_block_delta", Index = 0, Delta = new() { Type = "text_delta", Text = transcript.Text } };
+            yield return new() { Type = "content_block_stop", Index = 0 };
+            yield return new() { Type = "message_delta", Delta = new() { StopReason = "end_turn" } };
+            yield return new() { Type = "message_stop", Metadata = transcript.ProviderMetadata };
+        }
+    }
+
+    private static async Task WriteMessageAsResponseAsync(GatewayCall call, MessagesResponse message, long created, string? metadataProvider)
+    {
+        var result = ResponseResultFrom(message.Id!, created > 0 ? created : DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            message.Content.Select((block, index) => OutputItem(message.Id!, index, block)).ToList(), message.Usage, message.StopReason);
+        result.Model = message.Model ?? call.NativeModel;
+        AttachProviderMetadata(result, message.Metadata, metadataProvider);
+        GatewayPricing.Attach(result, GatewayPricing.Cost(message.Metadata));
+        await call.WriteAsync(result);
     }
 
     private static Dictionary<string, JsonElement>? TakeChatOptions(string? provider, Dictionary<string, JsonElement>? extensions)

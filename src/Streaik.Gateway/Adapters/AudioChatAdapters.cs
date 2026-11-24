@@ -41,9 +41,10 @@ public static partial class StreaikGateway
                     _ => null
                 } : null,
                 ResponseFormat = format == "pcm16" && !(call.ProviderId == "audixa" && request.Stream == true) ? "pcm" : format,
-                AdditionalProperties = request.Audio?.AdditionalProperties };
+                AdditionalProperties = call.ProviderId == "astica" ? MergeAudioOptions(call, request, request.Audio?.AdditionalProperties)
+                    : request.Audio?.AdditionalProperties };
             if (request.Stream == true && call.Get<IStreamingSpeechEventsProvider>() is { } events
-                && (call.ProviderId == "deepdub" || format is (null or "pcm16" or "pcm" or "raw")))
+                && (call.ProviderId is "deepdub" or "astica" || format is (null or "pcm16" or "pcm" or "raw")))
                 await call.WriteChatStreamAsync(SpeechStream(events, speechRequest));
             else
             {
@@ -65,8 +66,9 @@ public static partial class StreaikGateway
             var inputType = audio.Format switch { "wav" => "audio/wav", "mp3" => "audio/mpeg", _ => throw new ContractException("Use wav or mp3 input audio.", 422) };
             var (bytes, mediaType) = ReadAudio(audio.Data, inputType);
             using var input = new MemoryStream(bytes, writable: false);
+            var options = call.ProviderId == "bergetai" ? MergeAudioOptions(call, request, audio.AdditionalProperties) : audio.AdditionalProperties;
             var result = await call.Require<ITranscriptionProvider>().TranscribeAsync(call.NativeModel, input, mediaType, $"audio.{audio.Format}",
-                null, audio.AdditionalProperties, call.Headers, call.Ct);
+                null, options, call.Headers, call.Ct);
             if (request.Stream == true) await call.WriteChatStreamAsync(BufferedStream(new() { Role = "assistant", Content = result.Text }, result.ProviderMetadata));
             else await Write(new() { Content = result.Text }, result.ProviderMetadata);
         }
@@ -113,6 +115,15 @@ public static partial class StreaikGateway
                 }
             }
         }
+    }
+
+    private static Dictionary<string, JsonElement>? MergeAudioOptions(GatewayCall call, ChatCompletionOptions request,
+        Dictionary<string, JsonElement>? audio)
+    {
+        var result = SelectedOptions(call, request.AdditionalProperties);
+        if (result is null) return audio;
+        foreach (var (name, value) in audio ?? []) result[name] = value;
+        return result;
     }
 
     private static async Task<bool> TryVercelAudioChatAsync(GatewayCall call, ChatRequest request)
@@ -167,8 +178,45 @@ public static partial class StreaikGateway
             { Model = call.Model, Timestamp = DateTimeOffset.UtcNow, Usage = new(), ProviderMetadata = metadata } };
     }
 
-    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId is "typecast" or "async" or "audixa" or "deepdub"
+    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId is "typecast" or "async" or "audixa" or "deepdub" or "astica"
         && call.Get<IChatAudioRoutingProvider>()?.IsSpeechModel(call.NativeModel) == true;
+
+    private static bool UseTranscriptionFileAdapter(GatewayCall call) => call.ProviderId == "bergetai"
+        && call.Get<IChatAudioRoutingProvider>()?.IsTranscriptionModel(call.NativeModel) == true;
+
+    private static async Task TranscriptionViaResponsesAsync(GatewayCall call, ResponseRequest request)
+    {
+        if (request.Tools?.Count > 0 || request.Reasoning is not null || request.Text is not null)
+            throw new ContractException("Transcription Responses do not support tools, reasoning, or structured output.", 422);
+        var parts = request.Input?.Items?.OfType<ResponseInputMessage>().LastOrDefault(x => x.Role == ResponseRole.User)?.Content?.Parts;
+        if (parts?.OfType<InputFilePart>().ToArray() is not [{ FileData: { } data } file]
+            || parts.Any(part => part is not (InputTextPart or InputFilePart)))
+            throw new ContractException("Transcription Responses require one inline audio file.", 422);
+        var transcript = await TranscribeInlineAsync(call, data, null, file.Filename, request.AdditionalProperties);
+        await ProtocolAdapters.WriteTranscriptAsync(call, transcript, request.Stream == true, responses: true);
+    }
+
+    private static async Task TranscriptionViaMessagesAsync(GatewayCall call, MessagesRequest request)
+    {
+        if (request.Tools?.Count > 0 || request.Thinking is not null || request.OutputConfig is not null)
+            throw new ContractException("Transcription Messages do not support tools, thinking, or structured output.", 422);
+        var parts = request.Messages?.LastOrDefault(x => x.Role == "user")?.Content.Blocks;
+        if (parts?.Where(part => part.Type == "document").ToArray() is not [{ Source: { Data: { } data } source } file]
+            || parts.Any(part => part.Type is not ("text" or "document")))
+            throw new ContractException("Transcription Messages require one inline audio document.", 422);
+        var transcript = await TranscribeInlineAsync(call, data, source.MediaType, file.Title, request.AdditionalProperties);
+        await ProtocolAdapters.WriteTranscriptAsync(call, transcript, request.Stream == true, responses: false);
+    }
+
+    private static async Task<TranscriptionResponse> TranscribeInlineAsync(GatewayCall call, string data, string? mediaType,
+        string? filename, Dictionary<string, JsonElement>? extensions)
+    {
+        var options = SelectedOptions(call, extensions, "model", "file", "stream");
+        var (bytes, mime) = ReadAudio(data, mediaType);
+        using var audio = new MemoryStream(bytes, writable: false);
+        return await call.Require<ITranscriptionProvider>().TranscribeAsync(call.NativeModel, audio, mime, filename ?? "audio",
+            null, options, call.Headers, call.Ct);
+    }
 
     private static async Task SpeechViaResponsesAsync(GatewayCall call, ResponseRequest request)
     {

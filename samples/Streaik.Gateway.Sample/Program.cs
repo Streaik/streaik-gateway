@@ -43,6 +43,7 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddCrusoe().AddAtlasCloud().AddDeepdub()
     .AddDoubleword().AddBananaPeel().AddCreora()
     .AddAkumi().AddClarifai().AddBespokeLabs()
+    .AddArkRoute().AddBergetAI().AddAstica()
     .AddStreaikHeaderAuth().AddStreaikReferences();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))
     builder.Services.AddSingleton(new ToolApprovalSigner(secret));

@@ -49,7 +49,8 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool arliAICartesiaCeleris = false, bool basetenCohereBria = false, bool cencoriDecartElevenLabs = false,
         bool nebiusNomicIdeogram = false, bool huggingFaceMixedbreadSegmind = false, bool tetrateUpstageTypecast = false,
         bool akashArceeAsync = false, bool nscaleDigitalOceanSpeechify = false, bool cloudRiftCoralBricksAudixa = false,
-        bool crusoeAtlasCloudDeepdub = false, bool doublewordBananaPeelCreora = false, bool akumiClarifaiBespokeLabs = false)
+        bool crusoeAtlasCloudDeepdub = false, bool doublewordBananaPeelCreora = false, bool akumiClarifaiBespokeLabs = false,
+        bool arkRouteBergetAstica = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -78,6 +79,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (crusoeAtlasCloudDeepdub) builder.Services.AddCrusoe().AddAtlasCloud().AddDeepdub();
         if (doublewordBananaPeelCreora) builder.Services.AddDoubleword().AddBananaPeel().AddCreora();
         if (akumiClarifaiBespokeLabs) builder.Services.AddAkumi().AddClarifai().AddBespokeLabs();
+        if (arkRouteBergetAstica) builder.Services.AddArkRoute().AddBergetAI().AddAstica();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -102,6 +104,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (crusoeAtlasCloudDeepdub) ids.AddRange(["crusoe", "atlascloud", "atlascloud-catalog", "atlascloud-assets", "deepdub", "deepdub-eu"]);
         if (doublewordBananaPeelCreora) ids.AddRange(["doubleword", "bananapeel", "creora"]);
         if (akumiClarifaiBespokeLabs) ids.AddRange(["akumi", "clarifai", "clarifai-catalog", "bespokelabs"]);
+        if (arkRouteBergetAstica) ids.AddRange(["arkroute", "bergetai", "astica", "astica-design"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));
