@@ -56,7 +56,8 @@ public static partial class StreaikGateway
         var request = await ReadAsync<SpeechRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
         var options = SpeechOptions(call, request.ProviderOptions);
-        if (call.Get<IStreamingSpeechEventsProvider>() is not null && request.Language is { } language)
+        if (request.Language is { } language && (call.Get<IStreamingSpeechEventsProvider>() is not null
+                || call.Get<IChatAudioRoutingProvider>()?.IsSpeechModel(call.NativeModel) == true))
             (options ??= new())["language"] = JsonSerializer.SerializeToElement(language, Web);
         using var upstream = await SpeakAsync(call, new() { Model = call.NativeModel, Input = request.Text,
             Voice = request.Voice, ResponseFormat = request.OutputFormat, Instructions = request.Instructions, Speed = request.Speed,

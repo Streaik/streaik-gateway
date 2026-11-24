@@ -38,7 +38,7 @@ internal static partial class VercelAdapter
             var artifacts = new GatewayContainerArtifacts.Turn(call);
             stream = ResponseParts(call, request, responses.StreamResponseAsync(native, call.Headers, call.Ct), artifacts);
         }
-        else if (call.Get<IMessagesProvider>() is { } messages)
+        else if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
             stream = MessageParts(call, request, messages.StreamMessageAsync(MessagesRequestFrom(call, request), call.Headers, call.Ct));
         else if (call.GetChatBridge() is { } chat)
         {
