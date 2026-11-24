@@ -46,9 +46,11 @@ internal static partial class VercelAdapter
             if ((!nativeOptions && request.ProviderMetadata?.ContainsKey(call.ProviderId) == true)
                 || request.Messages.SelectMany(message => message.Parts).OfType<ToolInvocationPart>().Any(tool => tool.ProviderExecuted == true))
                 throw new ContractException("Provider-specific Vercel options require a native adapter.");
-            var native = ChatCompletionsBridge.Request(MessagesRequestFrom(call, request, viaChat: true), request.MaxOutputTokens);
+            var translatePresentation = call.ProviderId == "cohere";
+            var native = ChatCompletionsBridge.Request(MessagesRequestFrom(call, request, viaChat: true), request.MaxOutputTokens, translatePresentation);
             if (nativeOptions) native.AdditionalProperties = NativeOptions<ChatCompletionOptions>(call, request, Web);
-            stream = MessageParts(call, request, ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), nativeOptions));
+            stream = MessageParts(call, request, ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), nativeOptions,
+                translatePresentation: translatePresentation));
         }
         else if (call.Get<IImageProvider>() is { } images)
         {

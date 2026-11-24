@@ -30,6 +30,7 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddCanopyWave().AddDaglo().AddVoyageAI().AddSluis().AddZyphra().AddZeroEntropy()
     .AddMoonshot().AddJina().AddBlackForestLabs().AddChutes().AddPinecone().AddRecraft()
     .AddArliAI().AddCartesia().AddCeleris()
+    .AddBaseten().AddCohere().AddBria()
     .AddStreaikHeaderAuth().AddStreaikReferences();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))
     builder.Services.AddSingleton(new ToolApprovalSigner(secret));

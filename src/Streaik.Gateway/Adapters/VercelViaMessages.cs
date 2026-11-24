@@ -69,6 +69,7 @@ internal static partial class VercelAdapter
         string? upstreamModel = null;
         string? stop = null;
         var metadata = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        HashSet<string>? sourceUrls = call.ProviderId == "cohere" ? new(StringComparer.Ordinal) : null;
         var preserveNativeFields = call.Get<Streaik.Providers.INativeChatOptionsProvider>() is not null;
         string PartId(int index) => $"{id}/{index}";
         JsonElement WireBlock(MessageContentBlock block) => JsonSerializer.SerializeToElement(block, MessagesJson.Default);
@@ -113,7 +114,12 @@ internal static partial class VercelAdapter
                     if (delta.Signature is { } signature) current.Block.Signature += signature;
                     if (delta.PartialJson is { } args)
                     { current.Arguments.Append(args); yield return new ToolCallDeltaPart { ToolCallId = current.Block.Id!, InputTextDelta = args }; }
-                    if (delta.Citation is { } citation) (current.Block.Citations ??= []).Add(citation);
+                    if (delta.Citation is { } citation)
+                    {
+                        (current.Block.Citations ??= []).Add(citation);
+                        if (citation.Url is { } url && sourceUrls?.Add(url) == true)
+                            yield return new SourceUIPart { SourceId = $"{id}/source/{sourceUrls.Count}", Url = url, Title = citation.Title };
+                    }
                     break;
                 case { Type: "content_block_stop" } when blocks.TryGetValue(index, out var completed):
                     var output = completed.Block;

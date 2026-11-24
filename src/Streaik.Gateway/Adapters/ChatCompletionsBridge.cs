@@ -9,7 +9,7 @@ namespace Streaik.Gateway;
 // This is an in-process mapping: no Messages endpoint or provider is called.
 internal static class ChatCompletionsBridge
 {
-    public static ChatCompletionOptions Request(MessagesRequest request, int? maxTokens)
+    public static ChatCompletionOptions Request(MessagesRequest request, int? maxTokens, bool translatePresentation = false)
     {
         if (request.CacheControl is not null || request.Container is not null || request.InferenceGeo is not null
             || request.Metadata is not null || request.OutputConfig is not null || request.ServiceTier is not null
@@ -67,6 +67,9 @@ internal static class ChatCompletionsBridge
                         when message.Role == "user":
                         FlushText(); parts.Add(new ChatMessageFilePart { File = new() { Filename = block.Title ?? "attachment.pdf",
                             FileData = $"data:application/pdf;base64,{pdf}" } }); break;
+                    case { Type: "thinking", Thinking: { Length: > 0 } thought } when translatePresentation && message.Role == "assistant":
+                        FlushText(); parts.Add(new ChatMessageUnknownContentPart { AdditionalProperties = new()
+                        { ["type"] = JsonSerializer.SerializeToElement("thinking"), ["thinking"] = JsonSerializer.SerializeToElement(thought) } }); break;
                     case { Type: "tool_use", Id: { Length: > 0 } id, Name: { Length: > 0 } name, Caller: null,
                         Input: { ValueKind: JsonValueKind.Object } input } when message.Role == "assistant":
                         calls.Add(new ChatCompletionMessageToolCall { Id = id, Function = new() { Name = name, Arguments = input.GetRawText() } });
@@ -144,11 +147,12 @@ internal static class ChatCompletionsBridge
     }
 
     public static async IAsyncEnumerable<MessageStreamPart> Updates(IAsyncEnumerable<ChatCompletionUpdate> source,
-        bool preserveNativeFields = false, string? metadataProvider = null)
+        bool preserveNativeFields = false, string? metadataProvider = null, bool translatePresentation = false)
     {
         var tools = new Dictionary<int, ToolState>();
         var next = 0;
         int? textIndex = null;
+        int? reasoningIndex = null;
         string? finish = null;
         ChatCompletionUsage? usage = null;
         GatewayPrice? cost = null;
@@ -177,6 +181,16 @@ internal static class ChatCompletionsBridge
             if (choice.Delta is not { } delta) continue;
             if (delta.FunctionCall is not null || delta.Audio is not null) throw new IOException("Unsupported Chat Completions delta.");
             refusal |= delta.Refusal is { Length: > 0 };
+            if (translatePresentation && delta.AdditionalProperties?.GetValueOrDefault("reasoning_content") is { ValueKind: JsonValueKind.String } thought
+                && thought.GetString() is { Length: > 0 } reasoning)
+            {
+                if (!reasoningIndex.HasValue)
+                {
+                    reasoningIndex = next++;
+                    yield return Start(reasoningIndex.Value, new() { Type = "thinking", Thinking = "" });
+                }
+                yield return Delta(reasoningIndex.Value, new() { Type = "thinking_delta", Thinking = reasoning });
+            }
             if (delta.Content is { Length: > 0 } text)
             {
                 if (!textIndex.HasValue)
@@ -185,6 +199,23 @@ internal static class ChatCompletionsBridge
                     yield return Start(textIndex.Value, new() { Type = "text", Text = "" });
                 }
                 yield return Delta(textIndex.Value, new() { Type = "text_delta", Text = text });
+            }
+            if (translatePresentation && delta.AdditionalProperties?.GetValueOrDefault("annotations") is { ValueKind: JsonValueKind.Array } annotations)
+            {
+                foreach (var annotation in annotations.EnumerateArray())
+                {
+                    if (annotation.ValueKind != JsonValueKind.Object || !annotation.TryGetProperty("url_citation", out var citation)
+                        || citation.ValueKind != JsonValueKind.Object) continue;
+                    var url = citation.Deserialize<ChatCompletionUrlCitation>(JsonSerializerOptions.Web);
+                    if (url is null || !Uri.TryCreate(url.Url, UriKind.Absolute, out var link) || link.Scheme is not ("https" or "http")) continue;
+                    if (!textIndex.HasValue)
+                    {
+                        textIndex = next++;
+                        yield return Start(textIndex.Value, new() { Type = "text", Text = "" });
+                    }
+                    yield return Delta(textIndex.Value, new() { Type = "citations_delta", Citation = new()
+                    { Type = "web_search_result_location", Url = url.Url, Title = url.Title, StartCharIndex = url.StartIndex, EndCharIndex = url.EndIndex } });
+                }
             }
             foreach (var fragment in delta.ToolCalls ?? [])
             {

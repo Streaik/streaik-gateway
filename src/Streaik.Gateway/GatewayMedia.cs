@@ -197,8 +197,9 @@ public static partial class StreaikGateway
     {
         var request = await ReadAsync<VideoRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
-        // These FLUX operations take a video or draft cache rather than a generation prompt.
-        if (call.ProviderId != "blackforestlabs" || call.NativeModel.ToLowerInvariant() is not ("flux-3-video-draft-enhance" or "flux-tools/video-upscale-v1"))
+        // Bria validates workflow-specific prompts itself; FLUX editing takes a video or draft cache.
+        if (call.ProviderId != "bria" && (call.ProviderId != "blackforestlabs"
+            || call.NativeModel.ToLowerInvariant() is not ("flux-3-video-draft-enhance" or "flux-tools/video-upscale-v1")))
             Need(request.Prompt, "prompt");
         var provider = call.Require<IVideoProvider>();
         var references = new GatewayReferences(call, "video");
