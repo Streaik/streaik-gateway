@@ -63,7 +63,7 @@ internal static partial class GatewayModelMetadata
         if (provider == "google" && name.StartsWith("gemini-", StringComparison.Ordinal)) return "language";
         if (provider == "xai" && name.StartsWith("grok-", StringComparison.Ordinal) && !XaiNonChat().IsMatch(name)) return "language";
         // These adapters use chat-oriented listings; special-purpose IDs above still take precedence.
-        return provider is "cencori" or "cerebras" or "chutes" or "deepseek" or "groq" ? "language" : "other";
+        return provider is "cencori" or "cerebras" or "chutes" or "deepseek" or "groq" or "nebius" ? "language" : "other";
     }
 
     [GeneratedRegex("^gpt-(?:4o-)?realtime(?:-|$)")]
@@ -82,7 +82,7 @@ internal static partial class GatewayModelMetadata
     private static partial Regex Speech();
     [GeneratedRegex("(?:^|[-_.])rerank(?:er|ing)?(?:[-_.]|$)")]
     private static partial Regex Reranking();
-    [GeneratedRegex("(?:^|[-_.])embed(?:ding|dings)?(?:[-_.]|$)|^bge-(?:m3|multilingual)(?:[-_.]|$)")]
+    [GeneratedRegex("(?:^|[-_.])embed(?:ding|dings)?(?:[-_.]|$)|^bge-(?:m3|multilingual|en-icl)(?:[-_.]|$)")]
     private static partial Regex Embedding();
     [GeneratedRegex("(?:^|[-_.])(?:video|sora|seedance|veo|wan[23]?|kling|pixverse|runway|hailuo|[tir]2v)(?:[0-9]*[-_.]|$)")]
     private static partial Regex Video();

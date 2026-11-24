@@ -31,7 +31,7 @@ internal static partial class VercelAdapter
         catch (ToolApprovalSignatureException error) { throw new ContractException(error.Message); }
 
         IAsyncEnumerable<UIMessagePart> stream;
-        if (call.Get<IResponsesProvider>() is { } responses)
+        if (!call.PreferChatBridge && call.Get<IResponsesProvider>() is { } responses)
         {
             var native = await ResponseRequestFromAsync(call, request);
             await GatewayContainerArtifacts.PrepareAsync(call, native);

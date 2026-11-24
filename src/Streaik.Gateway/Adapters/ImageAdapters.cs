@@ -148,12 +148,12 @@ internal static class ImageAdapters
     {
         var mapped = parts.Select(read).ToArray();
         var prompt = string.Join('\n', mapped.Select(x => x.Text).Prepend(text).Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (string.IsNullOrWhiteSpace(prompt)) throw MissingPrompt();
         return (prompt, mapped.Select(x => x.File).OfType<OpenAIImageReference>().ToArray());
     }
 
     private static Task<OpenAIImagesResponse> RunAsync(GatewayCall call, IImageProvider provider, string prompt, OpenAIImageReference[] files, JsonObject options)
     {
+        if (call.ProviderId != "ideogram" && string.IsNullOrWhiteSpace(prompt)) throw MissingPrompt();
         var action = options["action"] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
         if (action is not (null or "auto" or "edit" or "generate") || action == "edit" && files.Length == 0 || action == "generate" && files.Length > 0)
             throw new ContractException("Image action does not match the input images.", 422);

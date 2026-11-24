@@ -50,8 +50,9 @@ public static partial class StreaikGateway
     private static async Task ImageGenerationAsync(HttpContext context)
     {
         var request = await ReadAsync<OpenAIImageGenerationRequest>(context, Web);
-        Need(request.Prompt, "prompt");
         var call = new GatewayCall(context, request.Model);
+        // Ideogram V4 can use a structured prompt instead of text.
+        if (call.ProviderId != "ideogram") Need(request.Prompt, "prompt");
         request.Model = call.NativeModel;
         if (request.Stream == true && call.Get<IStreamingImagesProvider>() is { } native)
         { await WriteImageStreamAsync(call, native.StreamImagesAsync(request, call.Headers, call.Ct)); return; }
@@ -84,10 +85,10 @@ public static partial class StreaikGateway
             request.ImageFiles = form.Files.Where(f => f.Name is "image" or "image[]").ToArray();
             request.MaskFile = form.Files.GetFile("mask") ?? form.Files.GetFile("mask[]");
         }
-        Need(request.Prompt, "prompt");
         if (request.Images is not { Length: > 0 } && request.ImageFiles is not { Length: > 0 })
             throw new ContractException("An edit requires at least one image.");
         var call = new GatewayCall(context, request.Model);
+        if (call.ProviderId != "ideogram") Need(request.Prompt, "prompt");
         request.Model = call.NativeModel;
         if (request.Stream == true && call.Get<IStreamingImagesProvider>() is { } native)
         { await WriteImageStreamAsync(call, native.StreamImagesAsync(request, call.Headers, call.Ct)); return; }
@@ -131,8 +132,8 @@ public static partial class StreaikGateway
     private static async Task VercelImagesAsync(HttpContext context)
     {
         var request = await ReadAsync<ImageRequest>(context, Web);
-        Need(request.Prompt, "prompt");
         var call = new GatewayCall(context, request.Model);
+        if (call.ProviderId != "ideogram") Need(request.Prompt, "prompt");
         var provider = call.Require<IImageProvider>();
         var files = request.Files?.Select(ImageReference).ToArray();
         if (request.Mask is not null && files is not { Length: > 0 }) throw new ContractException("A mask requires an image.");
