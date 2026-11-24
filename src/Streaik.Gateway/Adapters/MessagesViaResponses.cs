@@ -120,7 +120,15 @@ internal static partial class ProtocolAdapters
       OutputTokens = usage?.OutputTokens, CacheReadInputTokens = usage?.InputTokensDetails?.CachedTokens,
       CacheCreationInputTokens = usage?.InputTokensDetails?.CacheWriteTokens };
 
-    private static async IAsyncEnumerable<MessageStreamPart> MessageUpdates(IAsyncEnumerable<ResponseStreamPart> source)
+    private static Dictionary<string, JsonElement>? ResponseBridgeMetadata(ResponseResult response, string? provider)
+    {
+        var metadata = GatewayPricing.CostMetadata(GatewayPricing.Cost(response));
+        if (provider is not null && (response.AdditionalProperties?.Count > 0 || response.Metadata?.Count > 0))
+            (metadata ??= [])[provider] = JsonSerializer.SerializeToElement(new { extensions = response.AdditionalProperties, metadata = response.Metadata });
+        return metadata;
+    }
+
+    private static async IAsyncEnumerable<MessageStreamPart> MessageUpdates(IAsyncEnumerable<ResponseStreamPart> source, string? provider = null)
     {
         var blocks = new Dictionary<(string Item, int Content), int>();
         var closed = new HashSet<int>();
@@ -183,7 +191,7 @@ internal static partial class ProtocolAdapters
             foreach (var i in blocks.Values) if (closed.Add(i)) yield return End(i);
             yield return new MessageStreamPart { Type = "message_delta", Delta = new MessageStreamDelta { StopReason = MessageStop(result, toolCalls) },
                 Usage = MessageUsage(result.NormalizedUsage) };
-            yield return new MessageStreamPart { Type = "message_stop", Metadata = GatewayPricing.CostMetadata(GatewayPricing.Cost(result)) };
+            yield return new MessageStreamPart { Type = "message_stop", Metadata = ResponseBridgeMetadata(result, provider) };
             yield break;
         }
         throw new IOException("Responses ended without a terminal event.");

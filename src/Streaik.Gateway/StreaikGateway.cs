@@ -96,7 +96,9 @@ public static partial class StreaikGateway
         if (await TryChatAudioAsync(call, request)) return;
         if (call.Get<IChatCompletionsProvider>() is not { } native)
         {
-            if (call.Get<IMessagesProvider>() is { } messages) await ProtocolAdapters.ChatViaMessagesAsync(call, request, messages);
+            if (call.ProviderId == "bananapeel" && call.Get<IResponsesProvider>() is { } preferred)
+                await ProtocolAdapters.ChatViaResponsesAsync(call, request, preferred);
+            else if (call.Get<IMessagesProvider>() is { } messages) await ProtocolAdapters.ChatViaMessagesAsync(call, request, messages);
             else if (call.Get<IResponsesProvider>() is { } responses) await ProtocolAdapters.ChatViaResponsesAsync(call, request, responses);
             else if (call.Get<IImageProvider>() is { } images) await ImageAdapters.ChatAsync(call, request, images);
             else await GatewayCall.ErrorAsync(context, Protocol.Chat, 400, "Provider does not support this protocol.");

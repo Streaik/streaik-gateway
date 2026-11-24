@@ -24,12 +24,22 @@ internal static partial class ProtocolAdapters
 
     public static async Task ChatViaResponsesAsync(GatewayCall call, ChatCompletionOptions request, IResponsesProvider provider)
     {
+        var metadataProvider = call.Get<INativeChatOptionsProvider>() is not null ? call.ProviderId : null;
+        var nativeOptions = metadataProvider is not null && request.AdditionalProperties?.Remove(metadataProvider, out var options) == true
+            ? new Dictionary<string, JsonElement> { [metadataProvider] = options } : null;
         var native = ToResponses(ToMessages(request));
+        native.AdditionalProperties = nativeOptions;
         native.MaxOutputTokens = request.MaxCompletionTokens ?? request.MaxTokens;
         if (request.Stream == true)
-            await call.WriteChatStreamAsync(ChatUpdates(call, MessageUpdates(provider.StreamResponseAsync(native, call.Headers, call.Ct)),
-                request.StreamOptions?.IncludeUsage == true));
-        else await call.WriteAsync(ChatResult(ToMessages(await provider.CreateResponseAsync(native, call.Headers, call.Ct))));
+            await call.WriteChatStreamAsync(ChatUpdates(call, MessageUpdates(provider.StreamResponseAsync(native, call.Headers, call.Ct), metadataProvider),
+                request.StreamOptions?.IncludeUsage == true, metadataProvider));
+        else
+        {
+            var response = await provider.CreateResponseAsync(native, call.Headers, call.Ct);
+            var result = ChatResult(ToMessages(response));
+            if (metadataProvider is not null) result.MetadataExtensions = ResponseBridgeMetadata(response, metadataProvider);
+            await call.WriteAsync(result);
+        }
     }
 
     private static MessagesRequest ToMessages(ChatCompletionOptions request)
@@ -93,7 +103,8 @@ internal static partial class ProtocolAdapters
                 Message = new ChatCompletionResponseMessage { Content = text.Length == 0 && tools.Count != 0 ? null : text, ToolCalls = tools.Count == 0 ? null : tools } }] };
     }
 
-    private static async IAsyncEnumerable<ChatCompletionUpdate> ChatUpdates(GatewayCall call, IAsyncEnumerable<MessageStreamPart> source, bool includeUsage)
+    private static async IAsyncEnumerable<ChatCompletionUpdate> ChatUpdates(GatewayCall call, IAsyncEnumerable<MessageStreamPart> source, bool includeUsage,
+        string? metadataProvider = null)
     {
         var id = "";
         var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -142,7 +153,9 @@ internal static partial class ProtocolAdapters
                     var finish = new BridgeChatFinish { Id = id, Model = model!, Created = created, OutputTokens = usage.OutputTokens,
                         Choices = [new ChatCompletionStreamChoice { FinishReason = ChatStop(stop) }] };
                     cost = GatewayPricing.Cost(part.Metadata) ?? cost;
-                    if (!includeUsage) finish.AdditionalProperties = GatewayPricing.AttachChat(null, cost ?? await GatewayPricing.EstimateAsync(call, model, usage));
+                    if (metadataProvider is not null && part.Metadata?.TryGetValue(metadataProvider, out var raw) == true)
+                        finish.AdditionalProperties = new() { ["metadata"] = JsonSerializer.SerializeToElement(new Dictionary<string, JsonElement> { [metadataProvider] = raw }) };
+                    if (!includeUsage) finish.AdditionalProperties = GatewayPricing.AttachChat(finish.AdditionalProperties, cost ?? await GatewayPricing.EstimateAsync(call, model, usage));
                     yield return finish;
                     if (includeUsage) yield return new ChatCompletionUpdate { Id = id, Model = model!, Created = created, Usage = ChatUsage(usage),
                         AdditionalProperties = GatewayPricing.AttachChat(null, cost) };
