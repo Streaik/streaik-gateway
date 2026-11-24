@@ -142,7 +142,7 @@ internal static partial class ProtocolAdapters
                     var finish = new BridgeChatFinish { Id = id, Model = model!, Created = created, OutputTokens = usage.OutputTokens,
                         Choices = [new ChatCompletionStreamChoice { FinishReason = ChatStop(stop) }] };
                     cost = GatewayPricing.Cost(part.Metadata) ?? cost;
-                    if (!includeUsage) finish.AdditionalProperties = GatewayPricing.AttachChat(null, cost ?? GatewayPricing.Estimate(call, model, usage));
+                    if (!includeUsage) finish.AdditionalProperties = GatewayPricing.AttachChat(null, cost ?? await GatewayPricing.EstimateAsync(call, model, usage));
                     yield return finish;
                     if (includeUsage) yield return new ChatCompletionUpdate { Id = id, Model = model!, Created = created, Usage = ChatUsage(usage),
                         AdditionalProperties = GatewayPricing.AttachChat(null, cost) };

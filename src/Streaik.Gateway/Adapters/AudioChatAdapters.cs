@@ -160,7 +160,7 @@ public static partial class StreaikGateway
             { Model = call.Model, Timestamp = DateTimeOffset.UtcNow, Usage = new(), ProviderMetadata = metadata } };
     }
 
-    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId == "typecast"
+    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId is "typecast" or "async"
         && call.Get<IChatAudioRoutingProvider>()?.IsSpeechModel(call.NativeModel) == true;
 
     private static async Task SpeechViaResponsesAsync(GatewayCall call, ResponseRequest request)

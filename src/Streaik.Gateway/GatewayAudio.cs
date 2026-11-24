@@ -112,7 +112,7 @@ public static partial class StreaikGateway
     }
 
     private static Dictionary<string, JsonElement>? SpeechOptions(GatewayCall call, Dictionary<string, JsonElement>? options)
-        => call.Get<IStreamingSpeechProvider>() is not null
+        => call.ProviderId == "async" || call.Get<IStreamingSpeechProvider>() is not null
             ? SelectedOptions(call, options, "model", "input", "response_format", "stream_format", "stream")
             : SelectedOptions(call, options, "model", "input", "voice", "response_format", "stream_format");
 

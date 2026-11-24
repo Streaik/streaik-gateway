@@ -233,7 +233,7 @@ internal static partial class VercelAdapter
             yield return Finish(call, request, refusal || filtered ? "content-filter" : result.Status == "incomplete" ? "length"
                 : sentCalls.Count > 0 ? "tool-calls" : "stop", usage?.InputTokens, usage?.OutputTokens, call.ProviderId,
                 result.Usage, result.AdditionalProperties, result.CreatedAt,
-                GatewayPricing.Cost(result) ?? GatewayPricing.Estimate(call, result.Model, result.Usage));
+                GatewayPricing.Cost(result) ?? await GatewayPricing.EstimateAsync(call, result.Model, result.Usage));
             yield break;
         }
         throw new IOException("Responses ended without a terminal event.");

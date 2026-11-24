@@ -119,7 +119,7 @@ public static partial class StreaikGateway
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ResponsesAsync(call, request, image); return; }
         if (call.Get<IResponsesProvider>() is not { } native)
         {
-            if (call.Get<IMessagesProvider>() is { } messages) await ProtocolAdapters.ResponsesViaMessagesAsync(call, request, messages);
+            if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages) await ProtocolAdapters.ResponsesViaMessagesAsync(call, request, messages);
             else if (call.GetChatBridge() is { } chat) await ProtocolAdapters.ResponsesViaChatAsync(call, request, chat);
             else if (call.Get<IImageProvider>() is { } images) await ImageAdapters.ResponsesAsync(call, request, images);
             else await GatewayCall.ErrorAsync(context, Protocol.Responses, 400, "Provider does not support this protocol.");

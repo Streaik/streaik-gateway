@@ -33,25 +33,25 @@ internal sealed class GatewayCall
     public string NativeModel { get; }
     public IReadOnlyDictionary<string, string> Headers { get; }
     public CancellationToken Ct => Context.RequestAborted;
-    // These providers expose native Responses explicitly, but translated turns use Chat Completions.
-    public bool PreferChatBridge => ProviderId is "nebius" or "mixedbread" or "tetrate" or "upstage";
+    // These providers use Chat Completions for translated turns, even when they have other native endpoints.
+    public bool PreferChatBridge => ProviderId is "nebius" or "mixedbread" or "tetrate" or "upstage" or "akashml";
     public T? Get<T>() where T : class => Context.RequestServices.GetKeyedService<T>(ProviderId);
     public IChatCompletionsProvider? GetChatBridge() => Get<IChatBridgeProvider>()?.ChatBridge ?? Get<IChatCompletionsProvider>();
     public T Require<T>() where T : class => Get<T>() ?? throw new ContractException("Provider does not support this protocol.");
     private GatewayPerformance Measure() => new(Context.RequestServices.GetService<TimeProvider>() ?? TimeProvider.System);
 
-    public Task WriteAsync(ChatCompletion result)
+    public async Task WriteAsync(ChatCompletion result)
     {
-        var cost = GatewayPricing.Estimate(this, result.Model, result.Usage);
+        var cost = await GatewayPricing.EstimateAsync(this, result.Model, result.Usage);
         if (result.Metadata?.ContainsKey("gateway") != true)
             result.MetadataExtensions = GatewayPricing.Attach(result.MetadataExtensions, cost);
         result.Model = Model;
-        return Context.Response.WriteAsJsonAsync(result, Ct);
+        await Context.Response.WriteAsJsonAsync(result, Ct);
     }
 
     public async Task WriteAsync(ResponseResult result, GatewayContainerArtifacts.Turn? artifacts = null)
     {
-        GatewayPricing.Attach(result, GatewayPricing.Estimate(this, result.Model, result.Usage));
+        GatewayPricing.Attach(result, await GatewayPricing.EstimateAsync(this, result.Model, result.Usage));
         GatewayContainerArtifacts.AddResponseReferences(this, result);
         if (artifacts is not null && result.Status is "completed" or "incomplete")
         {
@@ -63,11 +63,11 @@ internal sealed class GatewayCall
         await Context.Response.WriteAsJsonAsync(result, ResponseJson.Default, Ct);
     }
 
-    public Task WriteAsync(MessagesResponse result)
+    public async Task WriteAsync(MessagesResponse result)
     {
-        result.Metadata = GatewayPricing.Attach(result.Metadata, GatewayPricing.Estimate(this, result.Model, result.Usage));
+        result.Metadata = GatewayPricing.Attach(result.Metadata, await GatewayPricing.EstimateAsync(this, result.Model, result.Usage));
         result.Model = Model;
-        return Context.Response.WriteAsJsonAsync(result, MessagesJson.Default, Ct);
+        await Context.Response.WriteAsJsonAsync(result, MessagesJson.Default, Ct);
     }
 
     public async Task WriteChatStreamAsync(IAsyncEnumerable<ChatCompletionUpdate> source)
@@ -82,7 +82,7 @@ internal sealed class GatewayCall
             upstreamModel = part.Model ?? upstreamModel;
             if (part.Usage is not null)
                 part.AdditionalProperties = GatewayPricing.AttachChat(part.AdditionalProperties,
-                    GatewayPricing.Estimate(this, upstreamModel, part.Usage));
+                    await GatewayPricing.EstimateAsync(this, upstreamModel, part.Usage));
             performance.Observe(part);
             await WritePartAsync(part);
         }
@@ -112,7 +112,7 @@ internal sealed class GatewayCall
             {
                 if (part is ResponseCompleted or ResponseIncompleteEvent)
                 {
-                    GatewayPricing.Attach(response, GatewayPricing.Estimate(this, response.Model, response.Usage));
+                    GatewayPricing.Attach(response, await GatewayPricing.EstimateAsync(this, response.Model, response.Usage));
                     GatewayContainerArtifacts.AddResponseReferences(this, response);
                     if (artifacts is not null)
                     {
@@ -173,7 +173,7 @@ internal sealed class GatewayCall
             MessagesHistory.MergeUsage(usage, part.Usage);
             reportedCost = GatewayPricing.Cost(part.Metadata) ?? GatewayPricing.Reported(ProviderId, part.Usage) ?? reportedCost;
             if (part.Type == "message_stop")
-                part.Metadata = GatewayPricing.Attach(part.Metadata, reportedCost ?? GatewayPricing.Estimate(this, upstreamModel, usage));
+                part.Metadata = GatewayPricing.Attach(part.Metadata, reportedCost ?? await GatewayPricing.EstimateAsync(this, upstreamModel, usage));
             performance.Observe(part);
             // Native Messages clients require these counters. Bridged streams can
             // start before the upstream reports usage, or end without a usage tail.

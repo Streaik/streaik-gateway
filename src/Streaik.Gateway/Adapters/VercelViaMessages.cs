@@ -144,7 +144,7 @@ internal static partial class VercelAdapter
                     yield return Finish(call, request, stop switch { "tool_use" => "tool-calls", "max_tokens" or "model_context_window_exceeded" => "length",
                         "refusal" => "content-filter", "pause_turn" => "other", _ => "stop" }, MessagesHistory.TotalInput(usage), usage.OutputTokens,
                         call.ProviderId, JsonSerializer.SerializeToElement(usage, MessagesJson.Default), metadata,
-                        cost: GatewayPricing.Estimate(call, upstreamModel, usage));
+                        cost: await GatewayPricing.EstimateAsync(call, upstreamModel, usage));
                     yield break;
                 case { Type: "error" }: throw new IOException("Messages returned a stream error.");
             }

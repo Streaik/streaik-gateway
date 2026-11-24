@@ -6,6 +6,7 @@ using Streaik.Catalog;
 using Streaik.ChatCompletions.Models;
 using Streaik.Messages;
 using Streaik.OpenAI.Models;
+using Streaik.Providers;
 using Streaik.Responses;
 
 namespace Streaik.Gateway;
@@ -25,7 +26,7 @@ internal static class GatewayPricing
         return price.Deserialize<ModelPricing>(Json);
     }
 
-    public static GatewayPrice? Estimate(GatewayCall call, string? upstreamModel, object? usage)
+    public static async ValueTask<GatewayPrice?> EstimateAsync(GatewayCall call, string? upstreamModel, object? usage)
     {
         if (Reported(call.ProviderId, usage) is { } reported) return reported;
         if (usage is JsonElement { ValueKind: JsonValueKind.Object } wire)
@@ -52,6 +53,28 @@ internal static class GatewayPricing
         if (uncached < 0 || output < 0 || read < 0 || write < 0 || uncached + output + read + write == 0) return null;
 
         var rates = (upstreamModel is null ? null : Rates(call.ProviderId, upstreamModel)) ?? Rates(call.ProviderId, call.NativeModel);
+        if (rates is null && call.ProviderId == "arceeai" && call.Get<IModelListingProvider>() is { } listing)
+        {
+            // Arcee exposes its rates via model discovery rather than the static catalog.
+            ModelPricing? fallback = null;
+            const string prefix = "arceeai/";
+            var upstreamId = upstreamModel?.StartsWith(prefix, StringComparison.Ordinal) == true ? upstreamModel[prefix.Length..] : upstreamModel;
+            using var lookup = CancellationTokenSource.CreateLinkedTokenSource(call.Ct);
+            lookup.CancelAfter(TimeSpan.FromSeconds(3));
+            try
+            {
+                await foreach (var model in listing.ListModelsAsync(lookup.Token).WithCancellation(lookup.Token))
+                {
+                    if (model.Id == upstreamId && model.Pricing is not null) { rates = model.Pricing; break; }
+                    if (model.Id == call.NativeModel) fallback = model.Pricing;
+                }
+            }
+            catch (Exception ex) when (!call.Ct.IsCancellationRequested && ex is HttpRequestException or IOException or JsonException or OperationCanceledException)
+            {
+                // A rate-card failure should not fail a successful inference.
+            }
+            rates ??= fallback;
+        }
         if (rates is null || (read > 0 && rates.InputCacheRead is null) || (write > 0 && rates.InputCacheWrite is null)) return null;
         return new GatewayPrice(uncached * rates.Input + output * rates.Output
             + read * (rates.InputCacheRead ?? 0) + write * (rates.InputCacheWrite ?? 0), Estimated: true);
