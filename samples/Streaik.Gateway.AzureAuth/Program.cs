@@ -37,7 +37,8 @@ if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string
 builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGladia().AddOpenRouter().AddFireworks()
     .AddDeepSeek().AddGroq().AddTogether().AddCerebras().AddGoogle().AddXai().AddAssemblyAI()
     .AddCanopyWave().AddDaglo().AddVoyageAI().AddSluis().AddZyphra().AddZeroEntropy()
-    .AddMoonshot().AddJina().AddBlackForestLabs().AddChutes().AddPinecone().AddRecraft().AddStreaikReferences();
+    .AddMoonshot().AddJina().AddBlackForestLabs().AddChutes().AddPinecone().AddRecraft()
+    .AddArliAI().AddCartesia().AddCeleris().AddStreaikReferences();
 await VaultProviderKeys.LoadAsync(builder);
 
 var app = builder.Build();

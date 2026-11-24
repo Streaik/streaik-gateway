@@ -92,6 +92,8 @@ public static partial class StreaikGateway
         if (request.Store == true) throw new ContractException("Streaik does not store Chat Completions.");
         request.Store = false;
         request.Model = call.NativeModel;
+        if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ChatAsync(call, request, image); return; }
+        if (await TryChatAudioAsync(call, request)) return;
         if (call.Get<IChatCompletionsProvider>() is not { } native)
         {
             if (call.Get<IMessagesProvider>() is { } messages) await ProtocolAdapters.ChatViaMessagesAsync(call, request, messages);
@@ -113,6 +115,7 @@ public static partial class StreaikGateway
             throw new ContractException("Streaik Responses require inline history and do not support stored or background responses.");
         request.Store = false;
         request.Model = call.NativeModel;
+        if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ResponsesAsync(call, request, image); return; }
         if (call.Get<IResponsesProvider>() is not { } native)
         {
             if (call.Get<IMessagesProvider>() is { } messages) await ProtocolAdapters.ResponsesViaMessagesAsync(call, request, messages);
@@ -132,6 +135,7 @@ public static partial class StreaikGateway
         var request = await ReadAsync<MessagesRequest>(context, MessagesJson.Default);
         var call = new GatewayCall(context, request.Model);
         request.Model = call.NativeModel;
+        if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.MessagesAsync(call, request, image); return; }
         if (call.Get<IMessagesProvider>() is not { } native)
         {
             if (call.Get<IResponsesProvider>() is { } responses) await ProtocolAdapters.MessagesViaResponsesAsync(call, request, responses);
@@ -147,8 +151,13 @@ public static partial class StreaikGateway
     private static async Task VercelAsync(HttpContext context)
     {
         var request = await ReadAsync<ChatRequest>(context, JsonSerializerOptions.Web);
-        await VercelAdapter.RunAsync(new GatewayCall(context, request.Model), request);
+        var call = new GatewayCall(context, request.Model);
+        if (await ImageRouteAsync(call) is { } image) await ImageAdapters.VercelAsync(call, request, image);
+        else if (!await TryVercelAudioChatAsync(call, request)) await VercelAdapter.RunAsync(call, request);
     }
+
+    private static async Task<IImageProvider?> ImageRouteAsync(GatewayCall call)
+        => call.Get<IImageModelRoutingProvider>() is { } provider && await provider.IsImageModelAsync(call.NativeModel, call.Ct) ? provider : null;
 
     private static async Task<T> ReadAsync<T>(HttpContext context, JsonSerializerOptions options)
     {

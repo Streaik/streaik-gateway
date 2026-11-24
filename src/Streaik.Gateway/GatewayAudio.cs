@@ -13,6 +13,22 @@ public static partial class StreaikGateway
         var request = await ReadAsync<AudioSpeechRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
         request.Model = call.NativeModel;
+        if (request.StreamFormat == "sse" && call.Get<IStreamingSpeechEventsProvider>() is { } events)
+        {
+            await foreach (var part in events.StreamSpeechAsync(request, call.Headers, call.Ct).WithCancellation(call.Ct))
+            {
+                if (part is SpeechStreamStartPart)
+                {
+                    StartMediaStream(call);
+                    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+                }
+                else if (part is SpeechAudioPart { Audio.Length: > 0 } audio)
+                    await GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(new AudioSpeechStreamDelta { Audio = audio.Audio }, Web), null, call.Ct);
+                else if (part is SpeechFinishPart)
+                    await GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(new AudioSpeechStreamDone(), Web), null, call.Ct);
+            }
+            return;
+        }
         if (request.StreamFormat == "sse" && call.Get<IStreamingSpeechProvider>() is { } streaming)
         {
             Need(request.Input, "input");
@@ -39,9 +55,12 @@ public static partial class StreaikGateway
     {
         var request = await ReadAsync<SpeechRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
+        var options = SpeechOptions(call, request.ProviderOptions);
+        if (call.Get<IStreamingSpeechEventsProvider>() is not null && request.Language is { } language)
+            (options ??= new())["language"] = JsonSerializer.SerializeToElement(language, Web);
         using var upstream = await SpeakAsync(call, new() { Model = call.NativeModel, Input = request.Text,
             Voice = request.Voice, ResponseFormat = request.OutputFormat, Instructions = request.Instructions, Speed = request.Speed,
-            AdditionalProperties = SpeechOptions(call, request.ProviderOptions) });
+            AdditionalProperties = options });
         var type = AudioType(upstream);
         await using var stream = await upstream.Content.ReadAsStreamAsync(call.Ct);
         using var buffer = new MemoryStream();
@@ -60,6 +79,17 @@ public static partial class StreaikGateway
     {
         var request = await ReadAsync<StreamingSpeechRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
+        if (call.Get<IStreamingSpeechEventsProvider>() is { } events)
+        {
+            request.Model = call.NativeModel;
+            await foreach (var part in events.StreamSpeechAsync(request, call.Headers, call.Ct).WithCancellation(call.Ct))
+            {
+                if (part is SpeechStreamStartPart) StartMediaStream(call);
+                if (part is SpeechResponseMetadataPart metadata) metadata.ModelId = call.Model;
+                await GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(part, Web), null, call.Ct);
+            }
+            return;
+        }
         if (request.Text is not { Length: > 0 } || request.Text.Any(x => x?.Text is null || x.ProviderOptions is not null)
             || request.Text.Select(x => x.Voice ?? request.Voice).Distinct().Count() != 1 || request.OutputFormat?.Rate is not null)
             throw new ContractException("Streaming speech supports one voice and format per request, without per-part options or a custom rate.");
