@@ -164,7 +164,7 @@ public static partial class StreaikGateway
         }
         await context.Response.WriteAsJsonAsync(new ImageResponse
         {
-            Images = result.Data?.Select(item => VercelImageData(item, result.OutputFormat)).ToArray(),
+            Images = result.Data?.Select(item => VercelImageData(item, result.OutputFormat, call.ProviderId == "digitalocean")).ToArray(),
             ProviderMetadata = ImageAdapters.ProviderMetadata(result, call.ProviderId),
             Warnings = result.AdditionalProperties?.GetValueOrDefault("warnings") is { ValueKind: JsonValueKind.Array } warnings
                 ? warnings.EnumerateArray().Select(static item => (object)item).ToArray() : [],
@@ -173,8 +173,13 @@ public static partial class StreaikGateway
         }, Web, call.Ct);
     }
 
-    private static string VercelImageData(OpenAIImageData item, string? format)
+    private static string VercelImageData(OpenAIImageData item, string? format, bool allowUrl)
     {
+        // DigitalOcean's SDK surface returns image URLs as well as inline images. Do not fetch them at the gateway.
+#pragma warning disable CS0618 // Compatibility with upstream URL outputs, only on the SDK image endpoint.
+        if (allowUrl && item.B64Json is null && Uri.TryCreate(item.Url, UriKind.Absolute, out var url)
+            && url.Scheme == Uri.UriSchemeHttps && url.UserInfo.Length == 0) return item.Url!;
+#pragma warning restore CS0618
         var image = item.B64Json ?? throw new IOException("The provider did not return an inline image.");
         var mediaType = format?.ToLowerInvariant() switch
         {

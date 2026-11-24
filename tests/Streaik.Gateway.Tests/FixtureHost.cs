@@ -46,7 +46,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool sluisZyphraZeroEntropy = false, bool moonshotJinaBlackForestLabs = false, bool chutesPineconeRecraft = false,
         bool arliAICartesiaCeleris = false, bool basetenCohereBria = false, bool cencoriDecartElevenLabs = false,
         bool nebiusNomicIdeogram = false, bool huggingFaceMixedbreadSegmind = false, bool tetrateUpstageTypecast = false,
-        bool akashArceeAsync = false)
+        bool akashArceeAsync = false, bool nscaleDigitalOceanSpeechify = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -70,6 +70,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (huggingFaceMixedbreadSegmind) builder.Services.AddHuggingFace().AddMixedbread().AddSegmind();
         if (tetrateUpstageTypecast) builder.Services.AddTetrate().AddUpstage().AddTypecast();
         if (akashArceeAsync) builder.Services.AddAkashML().AddArceeAI().AddAsyncAI();
+        if (nscaleDigitalOceanSpeechify) builder.Services.AddNscale().AddDigitalOcean().AddSpeechify();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -89,6 +90,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (huggingFaceMixedbreadSegmind) ids.AddRange(["huggingface", "mixedbread", "segmind"]);
         if (tetrateUpstageTypecast) ids.AddRange(["tetrate", "upstage", "typecast"]);
         if (akashArceeAsync) ids.AddRange(["akashml", "akashml-assets", "arceeai", "async"]);
+        if (nscaleDigitalOceanSpeechify) ids.AddRange(["nscale", "digitalocean", "speechify", "speechify-stream"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

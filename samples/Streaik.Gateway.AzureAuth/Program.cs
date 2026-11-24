@@ -43,7 +43,8 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddNebius().AddNomic().AddIdeogram()
     .AddTetrate().AddUpstage().AddTypecast()
     .AddHuggingFace().AddMixedbread().AddSegmind()
-    .AddAkashML().AddArceeAI().AddAsyncAI().AddStreaikReferences();
+    .AddAkashML().AddArceeAI().AddAsyncAI()
+    .AddNscale().AddDigitalOcean().AddSpeechify().AddStreaikReferences();
 await VaultProviderKeys.LoadAsync(builder);
 
 var app = builder.Build();
