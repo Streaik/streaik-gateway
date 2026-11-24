@@ -38,7 +38,8 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddDeepSeek().AddGroq().AddTogether().AddCerebras().AddGoogle().AddXai().AddAssemblyAI()
     .AddCanopyWave().AddDaglo().AddVoyageAI().AddSluis().AddZyphra().AddZeroEntropy()
     .AddMoonshot().AddJina().AddBlackForestLabs().AddChutes().AddPinecone().AddRecraft()
-    .AddArliAI().AddCartesia().AddCeleris().AddBaseten().AddCohere().AddBria().AddStreaikReferences();
+    .AddArliAI().AddCartesia().AddCeleris().AddBaseten().AddCohere().AddBria()
+    .AddCencori().AddDecart().AddElevenLabs().AddStreaikReferences();
 await VaultProviderKeys.LoadAsync(builder);
 
 var app = builder.Build();

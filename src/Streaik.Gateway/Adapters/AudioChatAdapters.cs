@@ -36,13 +36,13 @@ public static partial class StreaikGateway
                 await call.WriteChatStreamAsync(SpeechStream(events, speechRequest));
             else
             {
-                var (encoded, mediaType) = await ReadInlineSpeechAsync(call, speechRequest);
+                var (encoded, mediaType, providerMetadata) = await ReadInlineSpeechAsync(call, speechRequest);
                 var metadata = new Dictionary<string, JsonElement> { ["mime_type"] = JsonSerializer.SerializeToElement(mediaType) };
                 if (request.Stream == true)
                     await call.WriteChatStreamAsync(BufferedStream(new() { Role = "assistant", Audio = new() { Id = audioId, Data = encoded,
-                        Transcript = speechRequest.Input, AdditionalProperties = metadata } }, null));
+                        Transcript = speechRequest.Input, AdditionalProperties = metadata } }, providerMetadata));
                 else await Write(new() { Audio = new() { Id = audioId, Data = encoded, Transcript = speechRequest.Input,
-                    ExpiresAt = created, AdditionalProperties = metadata } }, null);
+                    ExpiresAt = created, AdditionalProperties = metadata } }, providerMetadata);
             }
         }
         else
@@ -134,11 +134,11 @@ public static partial class StreaikGateway
 
         async IAsyncEnumerable<UIMessagePart> SpeechParts(string input)
         {
-            var (audio, mediaType) = await ReadInlineSpeechAsync(call, new() { Model = call.NativeModel, Input = input,
+            var (audio, mediaType, metadata) = await ReadInlineSpeechAsync(call, new() { Model = call.NativeModel, Input = input,
                 AdditionalProperties = SpeechOptions(call, request.ProviderMetadata) });
             yield return new StartStepUIPart();
             yield return new FileUIPart { MediaType = mediaType, Url = $"data:{mediaType};base64,{audio}" };
-            yield return Finish(null);
+            yield return Finish(metadata);
         }
 
         async IAsyncEnumerable<UIMessagePart> TranscriptParts(TranscriptionResponse result)
@@ -156,7 +156,7 @@ public static partial class StreaikGateway
             { Model = call.Model, Timestamp = DateTimeOffset.UtcNow, Usage = new(), ProviderMetadata = metadata } };
     }
 
-    private static async Task<(string Base64, string MediaType)> ReadInlineSpeechAsync(GatewayCall call, AudioSpeechRequest request)
+    private static async Task<(string Base64, string MediaType, Dictionary<string, JsonElement>? Metadata)> ReadInlineSpeechAsync(GatewayCall call, AudioSpeechRequest request)
     {
         using var upstream = await SpeakAsync(call, request);
         var mediaType = AudioType(upstream);
@@ -169,6 +169,6 @@ public static partial class StreaikGateway
             buffer.Write(chunk, 0, size);
         }
         if (buffer.Length == 0) throw new IOException("The upstream returned no audio.");
-        return (Convert.ToBase64String(buffer.GetBuffer(), 0, (int)buffer.Length), mediaType);
+        return (Convert.ToBase64String(buffer.GetBuffer(), 0, (int)buffer.Length), mediaType, (upstream as SpeechProviderResponse)?.ProviderMetadata);
     }
 }

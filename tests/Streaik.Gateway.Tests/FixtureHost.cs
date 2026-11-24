@@ -44,7 +44,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         Action<WebApplicationBuilder>? configureHost = null, string? authorization = null, bool compatibleChat = false, bool liveProviders = false,
         Action<WebApplication>? configureApp = null, bool decisions = false, bool gladia = false, bool portedProviders = false,
         bool sluisZyphraZeroEntropy = false, bool moonshotJinaBlackForestLabs = false, bool chutesPineconeRecraft = false,
-        bool arliAICartesiaCeleris = false, bool basetenCohereBria = false)
+        bool arliAICartesiaCeleris = false, bool basetenCohereBria = false, bool cencoriDecartElevenLabs = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -63,6 +63,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (chutesPineconeRecraft) builder.Services.AddChutes().AddPinecone().AddRecraft();
         if (arliAICartesiaCeleris) builder.Services.AddArliAI().AddCartesia().AddCeleris();
         if (basetenCohereBria) builder.Services.AddBaseten().AddCohere().AddBria();
+        if (cencoriDecartElevenLabs) builder.Services.AddCencori().AddDecart().AddElevenLabs();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -77,6 +78,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (chutesPineconeRecraft) ids.AddRange(["chutes", "pinecone", "recraft", "recraft-assets"]);
         if (arliAICartesiaCeleris) ids.AddRange(["arliai", "cartesia", "celeris"]);
         if (basetenCohereBria) ids.AddRange(["baseten", "cohere", "bria", "bria-delivery"]);
+        if (cencoriDecartElevenLabs) ids.AddRange(["cencori", "decart", "elevenlabs"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));
