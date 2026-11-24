@@ -34,9 +34,16 @@ public static partial class StreaikGateway
             var format = request.Audio?.Format;
             var speechRequest = new AudioSpeechRequest { Model = call.NativeModel,
                 Input = user.Content.Text ?? string.Concat((parts ?? []).OfType<ChatMessageTextPart>().Select(part => part.Text)),
+                Voice = call.ProviderId == "deepdub" ? request.Audio?.Voice switch
+                {
+                    ChatCompletionBuiltInVoice voice => voice.Name,
+                    ChatCompletionCustomVoice voice => voice.Id,
+                    _ => null
+                } : null,
                 ResponseFormat = format == "pcm16" && !(call.ProviderId == "audixa" && request.Stream == true) ? "pcm" : format,
                 AdditionalProperties = request.Audio?.AdditionalProperties };
-            if (request.Stream == true && call.Get<IStreamingSpeechEventsProvider>() is { } events && format is (null or "pcm16" or "pcm" or "raw"))
+            if (request.Stream == true && call.Get<IStreamingSpeechEventsProvider>() is { } events
+                && (call.ProviderId == "deepdub" || format is (null or "pcm16" or "pcm" or "raw")))
                 await call.WriteChatStreamAsync(SpeechStream(events, speechRequest));
             else
             {
@@ -160,7 +167,7 @@ public static partial class StreaikGateway
             { Model = call.Model, Timestamp = DateTimeOffset.UtcNow, Usage = new(), ProviderMetadata = metadata } };
     }
 
-    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId is "typecast" or "async" or "audixa"
+    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId is "typecast" or "async" or "audixa" or "deepdub"
         && call.Get<IChatAudioRoutingProvider>()?.IsSpeechModel(call.NativeModel) == true;
 
     private static async Task SpeechViaResponsesAsync(GatewayCall call, ResponseRequest request)

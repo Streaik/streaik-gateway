@@ -4,9 +4,11 @@ using Streaik.Gateway;
 using Streaik.Gateway.AzureAuth;
 using Streaik.Providers;
 using Streaik.Providers.Anthropic;
+using Streaik.Providers.AtlasCloud;
 using Streaik.Providers.BlackForestLabs;
 using Streaik.Providers.CanopyWave;
 using Streaik.Providers.Daglo;
+using Streaik.Providers.Deepdub;
 using Streaik.Providers.Deepgram;
 using Streaik.Providers.Fireworks;
 using Streaik.Providers.Gladia;
@@ -45,7 +47,8 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddHuggingFace().AddMixedbread().AddSegmind()
     .AddAkashML().AddArceeAI().AddAsyncAI()
     .AddNscale().AddDigitalOcean().AddSpeechify()
-    .AddCloudRift().AddCoralBricks().AddAudixa().AddStreaikReferences();
+    .AddCloudRift().AddCoralBricks().AddAudixa()
+    .AddCrusoe().AddAtlasCloud().AddDeepdub().AddStreaikReferences();
 await VaultProviderKeys.LoadAsync(builder);
 
 var app = builder.Build();

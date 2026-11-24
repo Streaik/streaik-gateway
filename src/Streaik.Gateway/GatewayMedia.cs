@@ -204,8 +204,8 @@ public static partial class StreaikGateway
     {
         var request = await ReadAsync<VideoRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
-        // Bria and Decart validate workflow-specific prompts themselves; FLUX editing takes a video or draft cache.
-        if (call.ProviderId is not ("bria" or "decart") && (call.ProviderId != "blackforestlabs"
+        // AtlasCloud accepts image-only inputs. Bria and Decart validate workflow-specific prompts; FLUX editing takes a video or draft cache.
+        if (call.ProviderId is not ("atlascloud" or "bria" or "decart") && (call.ProviderId != "blackforestlabs"
             || call.NativeModel.ToLowerInvariant() is not ("flux-3-video-draft-enhance" or "flux-tools/video-upscale-v1")))
             Need(request.Prompt, "prompt");
         var provider = call.Require<IVideoProvider>();

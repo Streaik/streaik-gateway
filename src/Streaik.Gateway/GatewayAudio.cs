@@ -132,7 +132,7 @@ public static partial class StreaikGateway
     }
 
     private static string AudioFormatName(string type) => type switch
-    { "audio/mpeg" => "mp3", "audio/x-wav" => "wav", "audio/ogg" => "opus", "application/octet-stream" => "pcm", _ => type.Split('/')[1] };
+    { "audio/mpeg" => "mp3", "audio/x-wav" => "wav", "audio/ogg" => "opus", "audio/basic" => "mulaw", "application/octet-stream" => "pcm", _ => type.Split('/')[1] };
 
     private static async Task NativeTranscriptionAsync(HttpContext context)
     {
