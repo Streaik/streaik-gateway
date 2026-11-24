@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Streaik.ChatCompletions.Models;
 using Streaik.Messages;
 using Streaik.Providers;
 using Streaik.Responses;
@@ -9,8 +10,10 @@ internal static partial class ProtocolAdapters
 {
     public static async Task MessagesViaChatAsync(GatewayCall call, MessagesRequest request, IChatCompletionsProvider provider)
     {
-        var native = ChatCompletionsBridge.Request(request, request.MaxTokens);
         var metadataProvider = call.Get<INativeChatOptionsProvider>() is not null ? call.ProviderId : null;
+        var options = TakeChatOptions(metadataProvider, request.AdditionalProperties);
+        var native = ChatCompletionsBridge.Request(request, request.MaxTokens);
+        native.AdditionalProperties = options;
         if (request.Stream == true)
             await call.WriteMessagesStreamAsync(ChatCompletionsBridge.Updates(provider.StreamChatAsync(native, call.Headers, call.Ct), metadataProvider is not null, metadataProvider));
         else await call.WriteAsync(ChatCompletionsBridge.Result(await provider.CompleteChatAsync(native, call.Headers, call.Ct), metadataProvider));
@@ -18,8 +21,10 @@ internal static partial class ProtocolAdapters
 
     public static async Task ResponsesViaChatAsync(GatewayCall call, ResponseRequest request, IChatCompletionsProvider provider)
     {
-        var native = ChatCompletionsBridge.Request(ToMessages(request), request.MaxOutputTokens);
         var metadataProvider = call.Get<INativeChatOptionsProvider>() is not null ? call.ProviderId : null;
+        var options = TakeChatOptions(metadataProvider, request.AdditionalProperties);
+        var native = ChatCompletionsBridge.Request(ToMessages(request), request.MaxOutputTokens);
+        native.AdditionalProperties = options;
         if (request.Stream == true)
             await call.WriteResponsesStreamAsync(ResponseUpdates(ChatCompletionsBridge.Updates(provider.StreamChatAsync(native, call.Headers, call.Ct),
                 metadataProvider is not null, metadataProvider), metadataProvider));
@@ -34,6 +39,17 @@ internal static partial class ProtocolAdapters
             GatewayPricing.Attach(result, GatewayPricing.Cost(message.Metadata));
             await call.WriteAsync(result);
         }
+    }
+
+    private static Dictionary<string, JsonElement>? TakeChatOptions(string? provider, Dictionary<string, JsonElement>? extensions)
+    {
+        if (provider is null || extensions?.Remove(provider, out var native) != true) return null;
+        if (native.ValueKind != JsonValueKind.Object) throw new ContractException("Provider-specific chat options must be an object.");
+        var reserved = JsonSerializerOptions.Web.GetTypeInfo(typeof(ChatCompletionOptions)).Properties
+            .Select(property => property.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // The normal adapters still validate every extension outside the selected provider's namespace.
+        return native.EnumerateObject().Where(field => !reserved.Contains(field.Name))
+            .ToDictionary(field => field.Name, field => field.Value, StringComparer.Ordinal);
     }
 
     private static void AttachProviderMetadata(ResponseResult result, Dictionary<string, JsonElement>? metadata, string? provider)

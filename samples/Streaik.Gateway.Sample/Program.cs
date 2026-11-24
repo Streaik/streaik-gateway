@@ -37,6 +37,7 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddHuggingFace().AddMixedbread().AddSegmind()
     .AddAkashML().AddArceeAI().AddAsyncAI()
     .AddNscale().AddDigitalOcean().AddSpeechify()
+    .AddCloudRift().AddCoralBricks().AddAudixa()
     .AddStreaikHeaderAuth().AddStreaikReferences();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))
     builder.Services.AddSingleton(new ToolApprovalSigner(secret));
