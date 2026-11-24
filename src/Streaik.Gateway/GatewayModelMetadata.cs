@@ -62,7 +62,7 @@ internal static partial class GatewayModelMetadata
         if (provider == "google" && name.StartsWith("gemini-", StringComparison.Ordinal)) return "language";
         if (provider == "xai" && name.StartsWith("grok-", StringComparison.Ordinal) && !XaiNonChat().IsMatch(name)) return "language";
         // These adapters use chat-oriented listings; special-purpose IDs above still take precedence.
-        return provider is "cencori" or "cerebras" or "chutes" or "cloudrift" or "deepseek" or "groq" or "huggingface" or "nebius" ? "language" : "other";
+        return provider is "cencori" or "cerebras" or "chutes" or "cloudrift" or "crusoe" or "deepseek" or "groq" or "huggingface" or "nebius" ? "language" : "other";
     }
 
     [GeneratedRegex("^gpt-(?:4o-)?realtime(?:-|$)")]
