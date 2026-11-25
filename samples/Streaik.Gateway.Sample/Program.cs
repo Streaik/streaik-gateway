@@ -52,8 +52,9 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddDoubleword().AddBananaPeel().AddCreora()
     .AddAkumi().AddClarifai().AddBespokeLabs()
     .AddArkRoute().AddBergetAI().AddAstica()
-    .AddBastionGPT().AddTensorBlock().AddUnrealSpeech()
+    .AddBastionGPT().AddTensorBlock().AddUnrealSpeech().AddAichixia().AddIsaacus()
     .AddStreaikHeaderAuth().AddStreaikReferences();
+if (builder.Configuration.GetValue<bool>("Providers:edgespeak:Enabled")) builder.Services.AddEdgeSpeak();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))
     builder.Services.AddSingleton(new ToolApprovalSigner(secret));
 

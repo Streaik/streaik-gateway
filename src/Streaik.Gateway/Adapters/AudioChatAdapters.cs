@@ -128,9 +128,26 @@ public static partial class StreaikGateway
 
     private static async Task<bool> TryVercelAudioChatAsync(GatewayCall call, ChatRequest request)
     {
-        if (call.Get<IChatAudioRoutingProvider>() is not { } route) return false;
-        var speech = route.IsSpeechModel(call.NativeModel);
-        if (!speech && !route.IsTranscriptionModel(call.NativeModel)) return false;
+        var route = call.Get<IChatAudioRoutingProvider>();
+        var speech = route?.IsSpeechModel(call.NativeModel) == true;
+        var transcription = route?.IsTranscriptionModel(call.NativeModel) == true;
+        var edgeSpeak = call.ProviderId == "edgespeak";
+        if (edgeSpeak && call.Get<IModelListingProvider>() is { } listing)
+        {
+            // EdgeSpeak deployments define their own model IDs. Do not guess modalities from model names.
+            var model = call.NativeModel;
+            var slash = model.LastIndexOf('/');
+            var voiceShortcut = slash > 0 && (model[(slash + 1)..].StartsWith("builtin:", StringComparison.Ordinal)
+                || model[(slash + 1)..].StartsWith("user:", StringComparison.Ordinal));
+            await foreach (var entry in listing.ListModelsAsync(call.Ct))
+            {
+                if (entry.Id != model && !(voiceShortcut && entry.Type == "speech" && entry.Id == model[..slash])) continue;
+                speech = entry.Type == "speech";
+                transcription = entry.Type == "transcription";
+                break;
+            }
+        }
+        if (!speech && !transcription) return false;
         if (request.Tools?.Any() == true || request.ResponseFormat is not null)
             throw new ContractException("Audio chat turns do not support tools or structured output.", 422);
         var user = request.Messages.LastOrDefault(message => message.Role == Role.user)
@@ -145,6 +162,11 @@ public static partial class StreaikGateway
             if (user.Parts.OfType<FileUIPart>().ToArray() is not [{ } file] || file.Url?.StartsWith("data:audio/", StringComparison.OrdinalIgnoreCase) != true
                 || user.Parts.Any(part => part is not (FileUIPart or TextUIPart)))
                 throw new ContractException("Transcription turns require one inline audio file.", 422);
+            if (edgeSpeak)
+            {
+                await call.WriteVercelStreamAsync(EdgeSpeakTranscriptParts(file));
+                return true;
+            }
             var options = SelectedOptions(call, request.ProviderMetadata, "model", "file");
             var (bytes, mediaType) = ReadAudio(file.Url, file.MediaType);
             using var input = new MemoryStream(bytes, writable: false);
@@ -156,6 +178,30 @@ public static partial class StreaikGateway
 
         async IAsyncEnumerable<UIMessagePart> SpeechParts(string input)
         {
+            if (edgeSpeak)
+            {
+                var nativeOptions = SpeechOptions(call, request.ProviderMetadata) ?? new();
+                if (request.Temperature is { } temperature) nativeOptions.TryAdd("temperature", JsonSerializer.SerializeToElement(temperature, Web));
+                if (request.TopP is { } topP) nativeOptions.TryAdd("top_p", JsonSerializer.SerializeToElement(topP, Web));
+                var native = new AudioSpeechRequest { Model = call.NativeModel, Input = input, StreamFormat = "sse", AdditionalProperties = nativeOptions };
+                using var buffer = new MemoryStream();
+                Dictionary<string, JsonElement>? finishedMetadata = null;
+                await foreach (var part in call.Require<IStreamingSpeechEventsProvider>().StreamSpeechAsync(native, call.Headers, call.Ct))
+                {
+                    if (part is SpeechStreamStartPart) yield return new StartStepUIPart();
+                    else if (part is SpeechAudioPart chunk)
+                    {
+                        if (chunk.Audio.Length > MaxMediaBytes * 4L / 3 + 8) throw new IOException("Audio output is too large.");
+                        var bytes = Convert.FromBase64String(chunk.Audio);
+                        if (buffer.Length + bytes.Length > MaxMediaBytes) throw new IOException("Audio output is too large.");
+                        buffer.Write(bytes);
+                    }
+                    else if (part is SpeechFinishPart done) finishedMetadata = done.ProviderMetadata;
+                }
+                yield return new FileUIPart { MediaType = "audio/wav", Url = $"data:audio/wav;base64,{Convert.ToBase64String(buffer.GetBuffer(), 0, (int)buffer.Length)}" };
+                yield return Finish(finishedMetadata);
+                yield break;
+            }
             var (audio, mediaType, metadata) = await ReadInlineSpeechAsync(call, new() { Model = call.NativeModel, Input = input,
                 AdditionalProperties = SpeechOptions(call, request.ProviderMetadata) });
             yield return new StartStepUIPart();
@@ -172,6 +218,34 @@ public static partial class StreaikGateway
             yield return new TextDeltaUIMessageStreamPart { Id = id, Delta = result.Text };
             yield return new TextEndUIMessageStreamPart { Id = id };
             yield return Finish(result.ProviderMetadata);
+        }
+
+        async IAsyncEnumerable<UIMessagePart> EdgeSpeakTranscriptParts(FileUIPart file)
+        {
+            var (bytes, mediaType) = ReadAudio(file.Url, file.MediaType);
+            var native = new StreamingTranscriptionRequest { Model = call.NativeModel, Audio = Convert.ToBase64String(bytes),
+                InputAudioFormat = new() { Type = mediaType }, ProviderOptions = request.ProviderMetadata };
+            const string id = "transcript";
+            var hasDelta = false;
+            await foreach (var part in call.Require<IStreamingTranscriptionProvider>().StreamTranscriptionAsync(native, call.Headers, call.Ct))
+            {
+                if (part is TranscriptionStreamStartPart)
+                {
+                    yield return new StartStepUIPart();
+                    yield return new TextStartUIMessageStreamPart { Id = id };
+                }
+                else if (part is TranscriptionDeltaPart delta)
+                {
+                    hasDelta = true;
+                    yield return new TextDeltaUIMessageStreamPart { Id = id, Delta = delta.Delta };
+                }
+                else if (part is TranscriptionFinishPart finish)
+                {
+                    if (!hasDelta) yield return new TextDeltaUIMessageStreamPart { Id = id, Delta = finish.Text };
+                    yield return new TextEndUIMessageStreamPart { Id = id };
+                    yield return Finish(finish.ProviderMetadata);
+                }
+            }
         }
 
         FinishUIPart Finish(Dictionary<string, JsonElement>? metadata) => new() { FinishReason = "stop", MessageMetadata = new()

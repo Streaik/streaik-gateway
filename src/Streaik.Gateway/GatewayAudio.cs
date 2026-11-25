@@ -24,8 +24,14 @@ public static partial class StreaikGateway
                 }
                 else if (part is SpeechAudioPart { Audio.Length: > 0 } audio)
                     await GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(new AudioSpeechStreamDelta { Audio = audio.Audio }, Web), null, call.Ct);
-                else if (part is SpeechFinishPart)
-                    await GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(new AudioSpeechStreamDone(), Web), null, call.Ct);
+                else if (part is SpeechFinishPart finish)
+                {
+                    var done = new AudioSpeechStreamDone();
+                    if (call.ProviderId == "edgespeak" && finish.ProviderMetadata?.TryGetValue("edgespeak", out var native) == true
+                        && native.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+                        done.Usage = usage.Deserialize<AudioSpeechUsage>(Web);
+                    await GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(done, Web), null, call.Ct);
+                }
             }
             return;
         }
@@ -46,7 +52,7 @@ public static partial class StreaikGateway
         }
         using var upstream = await SpeakAsync(call, request);
         var type = upstream.Content.Headers.ContentType?.MediaType;
-        context.Response.ContentType = type == "text/event-stream" ? type : AudioType(upstream);
+        context.Response.ContentType = type == "text/event-stream" ? type : AudioType(upstream, allowZip: call.ProviderId == "edgespeak");
         context.Response.Headers["X-Content-Type-Options"] = "nosniff";
         await upstream.Content.CopyToAsync(context.Response.Body, call.Ct);
     }
@@ -62,7 +68,7 @@ public static partial class StreaikGateway
         using var upstream = await SpeakAsync(call, new() { Model = call.NativeModel, Input = request.Text,
             Voice = request.Voice, ResponseFormat = request.OutputFormat, Instructions = request.Instructions, Speed = request.Speed,
             AdditionalProperties = options });
-        var type = AudioType(upstream);
+        var type = AudioType(upstream, allowZip: call.ProviderId == "edgespeak");
         await using var stream = await upstream.Content.ReadAsStreamAsync(call.Ct);
         using var buffer = new MemoryStream();
         var chunk = new byte[16384];
@@ -73,7 +79,7 @@ public static partial class StreaikGateway
         }
         await context.Response.WriteAsJsonAsync(new SpeechResponse { Audio = new() {
             Base64 = Convert.ToBase64String(buffer.GetBuffer(), 0, (int)buffer.Length), MimeType = type,
-            Format = call.ProviderId is "astica" or "unrealspeech" ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type) },
+            Format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type) },
             ProviderMetadata = (upstream as SpeechProviderResponse)?.ProviderMetadata,
             Response = new() { ModelId = call.Model, Timestamp = DateTime.UtcNow } }, Web, call.Ct);
     }
@@ -114,22 +120,22 @@ public static partial class StreaikGateway
     }
 
     private static Dictionary<string, JsonElement>? SpeechOptions(GatewayCall call, Dictionary<string, JsonElement>? options)
-        => call.ProviderId == "async" || call.Get<IStreamingSpeechProvider>() is not null
+        => call.ProviderId is "async" or "edgespeak" || call.Get<IStreamingSpeechProvider>() is not null
             ? SelectedOptions(call, options, "model", "input", "response_format", "stream_format", "stream")
             : SelectedOptions(call, options, "model", "input", "voice", "response_format", "stream_format");
 
     private static Task<HttpResponseMessage> SpeakAsync(GatewayCall call, AudioSpeechRequest request, bool stream = false)
     {
-        Need(request.Input, "input");
+        if (call.ProviderId != "edgespeak") Need(request.Input, "input"); // EdgeSpeak can use native segments instead.
         if (stream && call.Get<IStreamingSpeechProvider>() is { } streaming)
             return streaming.SpeakStreamingAsync(request, call.Headers, call.Ct);
         return call.Require<ISpeechProvider>().SpeakAsync(request, call.Headers, call.Ct);
     }
 
-    private static string AudioType(HttpResponseMessage response)
+    private static string AudioType(HttpResponseMessage response, bool allowZip = false)
     {
         var type = response.Content.Headers.ContentType?.MediaType;
-        return type?.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) == true || type == "application/octet-stream"
+        return type?.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) == true || type == "application/octet-stream" || allowZip && type == "application/zip"
             ? type : throw new IOException("The upstream did not return audio.");
     }
 

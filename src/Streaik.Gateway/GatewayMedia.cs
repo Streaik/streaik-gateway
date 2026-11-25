@@ -249,7 +249,9 @@ public static partial class StreaikGateway
         if (request.Values?.Any() != true) throw new ContractException("'values' is required.");
         var native = new OpenAIEmbeddingRequest { Model = call.NativeModel,
             Input = JsonSerializer.SerializeToElement(request.Values, Web), Dimensions = request.Dimensions, EncodingFormat = "float",
-            AdditionalProperties = SelectedOptions(call, request.ProviderOptions, "model", "input", "dimensions", "encoding_format") };
+            AdditionalProperties = call.ProviderId == "isaacus"
+                ? SelectedOptions(call, request.ProviderOptions, "model", "input", "encoding_format") // Isaacus accepts native null dimensions.
+                : SelectedOptions(call, request.ProviderOptions, "model", "input", "dimensions", "encoding_format") };
         OpenAIEmbeddingResponse result;
         EmbeddingResponseMetadata? metadata = null;
         if (call.Get<IEmbeddingMetadataProvider>() is { } provider)

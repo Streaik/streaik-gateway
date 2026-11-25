@@ -50,7 +50,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool nebiusNomicIdeogram = false, bool huggingFaceMixedbreadSegmind = false, bool tetrateUpstageTypecast = false,
         bool akashArceeAsync = false, bool nscaleDigitalOceanSpeechify = false, bool cloudRiftCoralBricksAudixa = false,
         bool crusoeAtlasCloudDeepdub = false, bool doublewordBananaPeelCreora = false, bool akumiClarifaiBespokeLabs = false,
-        bool arkRouteBergetAstica = false, bool bastionTensorUnreal = false)
+        bool arkRouteBergetAstica = false, bool bastionTensorUnreal = false, bool aichixiaEdgeSpeakIsaacus = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -81,6 +81,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (akumiClarifaiBespokeLabs) builder.Services.AddAkumi().AddClarifai().AddBespokeLabs();
         if (arkRouteBergetAstica) builder.Services.AddArkRoute().AddBergetAI().AddAstica();
         if (bastionTensorUnreal) builder.Services.AddBastionGPT().AddTensorBlock().AddUnrealSpeech();
+        if (aichixiaEdgeSpeakIsaacus) builder.Services.AddAichixia().AddEdgeSpeak().AddIsaacus();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -107,6 +108,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (akumiClarifaiBespokeLabs) ids.AddRange(["akumi", "clarifai", "clarifai-catalog", "bespokelabs"]);
         if (arkRouteBergetAstica) ids.AddRange(["arkroute", "bergetai", "astica", "astica-design"]);
         if (bastionTensorUnreal) ids.AddRange(["bastiongpt", "tensorblock", "tensorblock-assets", "unrealspeech", "unrealspeech-assets"]);
+        if (aichixiaEdgeSpeakIsaacus) ids.AddRange(["aichixia", "edgespeak", "isaacus"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));
