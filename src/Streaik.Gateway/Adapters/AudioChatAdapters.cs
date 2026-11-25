@@ -41,7 +41,7 @@ public static partial class StreaikGateway
                     _ => null
                 } : null,
                 ResponseFormat = format == "pcm16" && !(call.ProviderId == "audixa" && request.Stream == true) ? "pcm" : format,
-                AdditionalProperties = call.ProviderId == "astica" ? MergeAudioOptions(call, request, request.Audio?.AdditionalProperties)
+                AdditionalProperties = call.ProviderId is "astica" or "unrealspeech" ? MergeAudioOptions(call, request, request.Audio?.AdditionalProperties)
                     : request.Audio?.AdditionalProperties };
             if (request.Stream == true && call.Get<IStreamingSpeechEventsProvider>() is { } events
                 && (call.ProviderId is "deepdub" or "astica" || format is (null or "pcm16" or "pcm" or "raw")))
@@ -178,7 +178,7 @@ public static partial class StreaikGateway
             { Model = call.Model, Timestamp = DateTimeOffset.UtcNow, Usage = new(), ProviderMetadata = metadata } };
     }
 
-    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId is "typecast" or "async" or "audixa" or "deepdub" or "astica"
+    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId is "typecast" or "async" or "audixa" or "deepdub" or "astica" or "unrealspeech"
         && call.Get<IChatAudioRoutingProvider>()?.IsSpeechModel(call.NativeModel) == true;
 
     private static bool UseTranscriptionFileAdapter(GatewayCall call) => call.ProviderId == "bergetai"

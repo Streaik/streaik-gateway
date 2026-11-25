@@ -73,7 +73,7 @@ public static partial class StreaikGateway
         }
         await context.Response.WriteAsJsonAsync(new SpeechResponse { Audio = new() {
             Base64 = Convert.ToBase64String(buffer.GetBuffer(), 0, (int)buffer.Length), MimeType = type,
-            Format = call.ProviderId == "astica" ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type) },
+            Format = call.ProviderId is "astica" or "unrealspeech" ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type) },
             ProviderMetadata = (upstream as SpeechProviderResponse)?.ProviderMetadata,
             Response = new() { ModelId = call.Model, Timestamp = DateTime.UtcNow } }, Web, call.Ct);
     }
@@ -105,9 +105,10 @@ public static partial class StreaikGateway
         await Part(new SpeechResponseMetadataPart { ModelId = call.Model, Timestamp = DateTime.UtcNow });
         await using var stream = await upstream.Content.ReadAsStreamAsync(call.Ct);
         var chunk = new byte[16384];
+        var format = call.ProviderId == "unrealspeech" ? AudioFormatName(type) : request.OutputFormat?.Type ?? AudioFormatName(type);
         while (await stream.ReadAsync(chunk, call.Ct) is > 0 and var length)
-            await Part(new SpeechAudioPart { Audio = Convert.ToBase64String(chunk, 0, length), AudioFormat = new() { Type = request.OutputFormat?.Type ?? AudioFormatName(type) } });
-        await Part(new SpeechFinishPart());
+            await Part(new SpeechAudioPart { Audio = Convert.ToBase64String(chunk, 0, length), AudioFormat = new() { Type = format } });
+        await Part(new SpeechFinishPart { ProviderMetadata = (upstream as SpeechProviderResponse)?.ProviderMetadata });
 
         Task Part(StreamingSpeechPart part) => GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(part, Web), null, call.Ct);
     }

@@ -51,7 +51,8 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddCrusoe().AddAtlasCloud().AddDeepdub()
     .AddDoubleword().AddBananaPeel().AddCreora()
     .AddAkumi().AddClarifai().AddBespokeLabs()
-    .AddArkRoute().AddBergetAI().AddAstica().AddStreaikReferences();
+    .AddArkRoute().AddBergetAI().AddAstica()
+    .AddBastionGPT().AddTensorBlock().AddUnrealSpeech().AddStreaikReferences();
 await VaultProviderKeys.LoadAsync(builder);
 
 var app = builder.Build();
