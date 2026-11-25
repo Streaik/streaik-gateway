@@ -23,6 +23,14 @@ using Streaik.Vercel.Security;
 
 var builder = WebApplication.CreateBuilder(args);
 
+
+builder.WebHost.ConfigureKestrel(o =>
+{
+    o.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(230);
+    o.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(230);
+    o.Limits.MaxRequestBodySize = null;
+});
+
 if (builder.Environment.IsDevelopment())
     builder.WebHost.ConfigureKestrel(options =>
         options.ListenLocalhost(5079));

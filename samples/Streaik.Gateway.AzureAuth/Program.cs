@@ -23,6 +23,14 @@ using Streaik.Providers.Zyphra;
 using Streaik.Vercel.Security;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.WebHost.ConfigureKestrel(o =>
+{
+    o.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(230);
+    o.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(230);
+    o.Limits.MaxRequestBodySize = null;
+});
+
 EntraGatewayAuth.Add(builder.Services, builder.Configuration.GetSection("AzureAd"));
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))
 {
