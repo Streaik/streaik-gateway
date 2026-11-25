@@ -141,23 +141,33 @@ public sealed class ChatRoutingTests
         body["maxOutputTokens"] = 16;
         body["tools"] = JsonNode.Parse("""[{"name":"lookup","inputSchema":{"type":"object"}}]""");
         var options = JsonNode.Parse("""
-            {"reasoning":{"effort":"low","summary":"auto"},"service_tier":"flex","parallel_tool_calls":false,
+            {"reasoning":{"effort":"xhigh","summary":"auto","context":"all_turns","mode":"pro"},"service_tier":"flex","parallel_tool_calls":false,
              "context_management":[{"type":"compaction","compact_threshold":4096}],"max_output_tokens":32,
              "moderation":{"model":"omni-moderation-latest","policy":{"input":{"mode":"block"}}},
-             "prompt_cache_options":{"mode":"implicit","ttl":"30m"},"native_future":{"with_null":null,"enabled":false}}
+             "prompt_cache_options":{"mode":"implicit","ttl":"30m"},"native_future":{"with_null":null,"enabled":false},
+             "multi_agent":{"enabled":true,"max_concurrent_subagents":4},"text":{"verbosity":"high"}}
             """)!.AsObject();
         var supplied = (JsonObject)options.DeepClone();
-        supplied["tools"] = JsonNode.Parse("""[{"type":"web_search","search_context_size":"low"}]""");
-        supplied["include"] = JsonNode.Parse("""["web_search_call.action.sources"]""");
+        var settingsTools = JsonNode.Parse("""
+            [{"type":"web_search","search_context_size":"low","filters":{"allowed_domains":["example.org"]},"external_web_access":false},
+             {"type":"file_search","vector_store_ids":["vs_fixture"],"max_num_results":4},
+             {"type":"image_generation","output_format":"gif","frame_count":9,"frame_duration_ms":200},
+             {"type":"shell","allowed_callers":["direct","programmatic"],"environment":{"type":"container_auto","memory_limit":"4g",
+                "skills":[{"type":"skill_reference","skill_id":"skill_fixture","version":"2"}]}},
+             {"type":"programmatic_tool_calling"},{"type":"tool_search"}]
+            """)!.AsArray();
+        supplied["tools"] = settingsTools;
+        supplied["include"] = JsonNode.Parse("""["web_search_call.action.sources","file_search_call.results"]""");
         supplied["input"] = "not-the-user-input";
         supplied["Store"] = true;
         supplied["previous_response_id"] = "resp_unused";
         body["providerMetadata"] = new JsonObject { ["openai"] = supplied };
 
-        using var response = await host.PostAsync(Web, body.ToJsonString(), ("X-OpenAI-Key", "fixture-key"));
+        using var response = await host.PostAsync(Web, body.ToJsonString(), ("X-OpenAI-Key", "fixture-key"), ("OpenAI-Beta", "responses_multi_agent=v1"));
         Assert.Contains("hello", await GatewayTests.Success(response));
         var sent = Assert.Single(host.Requests);
         Assert.Equal(Responses, sent.Path);
+        Assert.Equal("responses_multi_agent=v1", sent.Headers["OpenAI-Beta"]);
         Assert.True(sent.Stream);
         Assert.False((bool)sent.Body!["store"]!);
         Assert.False(sent.Body.AsObject().ContainsKey("previous_response_id"));
@@ -165,8 +175,11 @@ public sealed class ChatRoutingTests
         foreach (var (key, expected) in options)
             Assert.True(JsonNode.DeepEquals(expected, sent.Body[key]), $"Unexpected native field {key}: {sent.Body[key]}");
         Assert.Equal("lookup", (string?)sent.Body["tools"]![0]!["name"]);
-        Assert.True(JsonNode.DeepEquals(supplied["tools"]![0], sent.Body["tools"]![1]));
-        Assert.Contains(sent.Body["include"]!.AsArray(), value => (string?)value == "reasoning.encrypted_content");
+        Assert.Equal(settingsTools.Count + 1, sent.Body["tools"]!.AsArray().Count);
+        for (var i = 0; i < settingsTools.Count; i++)
+            Assert.True(JsonNode.DeepEquals(settingsTools[i], sent.Body["tools"]![i + 1]), $"Unexpected native tool: {sent.Body["tools"]![i + 1]}");
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""["web_search_call.action.sources","file_search_call.results","reasoning.encrypted_content"]"""),
+            sent.Body["include"]));
     }
 
     [Theory]
