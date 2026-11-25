@@ -8,8 +8,19 @@ namespace Streaik.Gateway;
 
 internal static partial class VercelAdapter
 {
+    private const string EncryptedReasoningInclude = "reasoning.encrypted_content";
+
     private static async Task<ResponseRequest> ResponseRequestFromAsync(GatewayCall call, ChatRequest request)
     {
+        // An explicit OpenAI include array is authoritative, including an empty opt-out.
+        var include = Option(request, call.ProviderId, "include") is { ValueKind: JsonValueKind.Array } value
+            ? value.Deserialize<List<string>>() ?? [] : [EncryptedReasoningInclude];
+        var includeEncryptedReasoning = include.Contains(EncryptedReasoningInclude, StringComparer.Ordinal);
+        if (call.ProviderId != "openai" && !includeEncryptedReasoning)
+        {
+            include.Add(EncryptedReasoningInclude);
+            includeEncryptedReasoning = true;
+        }
         var input = new List<ResponseInputItem>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var protectedContainers = GatewayContainerArtifacts.Enabled(call);
@@ -35,7 +46,7 @@ internal static partial class VercelAdapter
                             { Role.assistant => ResponseRole.Assistant, Role.system => ResponseRole.System, _ => ResponseRole.User }, text.Text));
                         break;
                     case ReasoningUIPart thought when message.Role == Role.assistant:
-                        if (ReplayPart<ResponseInputItem>(thought.ProviderMetadata, call.ProviderId, NativeItem, ResponseJson.Default)
+                        if (includeEncryptedReasoning && ReplayPart<ResponseInputItem>(thought.ProviderMetadata, call.ProviderId, NativeItem, ResponseJson.Default)
                             is ResponseReasoningItem { Id: { } thoughtId, EncryptedContent: not null } nativeReasoning && seen.Add(thoughtId)) input.Add(nativeReasoning);
                         break;
                     case ToolInvocationPart { ProviderExecuted: true } tool when message.Role == Role.assistant:
@@ -98,9 +109,6 @@ internal static partial class VercelAdapter
                 (codeTool.Extra ??= [])[GatewayContainerArtifacts.ReplayKey] = JsonSerializer.SerializeToElement(containerToken);
             input.RemoveAll(item => item is ResponseCodeInterpreterCallItem code && (codeTool is null || code.ContainerId != containerId));
         }
-        var include = Option(request, call.ProviderId, "include") is { ValueKind: JsonValueKind.Array } value
-            ? value.Deserialize<List<string>>() ?? [] : new List<string>();
-        if (!include.Contains("reasoning.encrypted_content", StringComparer.Ordinal)) include.Add("reasoning.encrypted_content");
         object? textOptions = request.Verbosity is null ? null : new { verbosity = request.Verbosity };
         if (request.ResponseFormat is not null)
             throw new ContractException("This Vercel adapter does not translate response_format.");
@@ -120,7 +128,7 @@ internal static partial class VercelAdapter
     }
 
     private static async IAsyncEnumerable<UIMessagePart> ResponseParts(GatewayCall call, ChatRequest request,
-        IAsyncEnumerable<ResponseStreamPart> source, GatewayContainerArtifacts.Turn artifacts)
+        IAsyncEnumerable<ResponseStreamPart> source, GatewayContainerArtifacts.Turn artifacts, bool includeEncryptedReasoning)
     {
         var text = new HashSet<(string Item, int Index)>();
         var reasoning = new HashSet<string>(StringComparer.Ordinal);
@@ -197,7 +205,8 @@ internal static partial class VercelAdapter
                             var summary = string.Join('\n', thought.Summary.Select(part => part.Text));
                             if (summary.Length > 0) yield return new ReasoningDeltaUIPart { Id = id, Delta = summary };
                         }
-                        yield return new ReasoningEndUIPart { Id = id, ProviderMetadata = new() { [call.ProviderId] = new() { [NativeItem] = Serialize(thought) } } };
+                        yield return new ReasoningEndUIPart { Id = id, ProviderMetadata = includeEncryptedReasoning
+                            ? new() { [call.ProviderId] = new() { [NativeItem] = Serialize(thought) } } : null };
                         break;
                     case ResponseFunctionCallItem function when sentCalls.Add(function.CallId):
                         yield return new ToolCallPart { ToolCallId = function.CallId, ToolName = function.Name, Dynamic = true,
