@@ -154,7 +154,7 @@ public sealed class ChatRoutingTests
              {"type":"image_generation","output_format":"gif","frame_count":9,"frame_duration_ms":200},
              {"type":"shell","allowed_callers":["direct","programmatic"],"environment":{"type":"container_auto","memory_limit":"4g",
                 "skills":[{"type":"skill_reference","skill_id":"skill_fixture","version":"2"}]}},
-             {"type":"programmatic_tool_calling"},{"type":"tool_search"}]
+              {"type":"programmatic_tool_calling"},{"type":"tool_search"},{"type":"apply_patch"}]
             """)!.AsArray();
         supplied["tools"] = settingsTools;
         supplied["include"] = JsonNode.Parse("""["web_search_call.action.sources","file_search_call.results"]""");
@@ -178,8 +178,7 @@ public sealed class ChatRoutingTests
         Assert.Equal(settingsTools.Count + 1, sent.Body["tools"]!.AsArray().Count);
         for (var i = 0; i < settingsTools.Count; i++)
             Assert.True(JsonNode.DeepEquals(settingsTools[i], sent.Body["tools"]![i + 1]), $"Unexpected native tool: {sent.Body["tools"]![i + 1]}");
-        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""["web_search_call.action.sources","file_search_call.results","reasoning.encrypted_content"]"""),
-            sent.Body["include"]));
+        Assert.True(JsonNode.DeepEquals(supplied["include"], sent.Body["include"]));
     }
 
     [Theory]

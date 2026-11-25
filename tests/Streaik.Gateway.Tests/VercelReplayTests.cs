@@ -10,6 +10,40 @@ public sealed class VercelReplayTests
     private const string Route = "/api/chat";
 
     [Theory]
+    [InlineData(null, """["reasoning.encrypted_content"]""", true)]
+    [InlineData("""["file_search_call.results","reasoning.encrypted_content"]""", """["file_search_call.results","reasoning.encrypted_content"]""", true)]
+    [InlineData("[]", "[]", false)]
+    [InlineData("""["file_search_call.results"]""", """["file_search_call.results"]""", false)]
+    public async Task OpenAI_encrypted_reasoning_include_controls_stream_metadata_and_history(string? requested, string expected, bool enabled)
+    {
+        var request = GatewayTests.Request(Route, "openai/test", true);
+        if (requested is not null)
+            request["providerMetadata"] = new JsonObject { ["openai"] = new JsonObject { ["include"] = JsonNode.Parse(requested) } };
+
+        request["messages"]!.AsArray().Add(JsonNode.Parse("""
+            {"id":"old_reply","role":"assistant","parts":[{"type":"reasoning","text":"Previous summary",
+              "providerMetadata":{"openai":{"nativeItem":{"type":"reasoning","id":"rs_old","summary":[],"encrypted_content":"old_opaque"}}}},
+              {"type":"text","text":"Previous reply"}]}
+            """));
+        request["messages"]!.AsArray().Add(JsonNode.Parse("""{"id":"next","role":"user","parts":[{"type":"text","text":"Continue"}]}"""));
+
+        // Even if the provider returns encrypted content unasked, don't retain it while opted out.
+        await using var host = await FixtureHost.StartAsync(_ => EndResponse("""
+            {"type":"reasoning","id":"rs_new","summary":[{"type":"summary_text","text":"Visible summary"}],"encrypted_content":"new_opaque"}
+            """));
+        using var response = await host.PostAsync(Route, request.ToJsonString(), ("X-OpenAI-Key", "fixture-key"));
+        var wire = await GatewayTests.Success(response);
+        Assert.Equal("Visible summary", (string?)GatewayTests.Part(wire, "reasoning-delta")["delta"]);
+        var reasoningEnd = GatewayTests.Part(wire, "reasoning-end");
+        Assert.Equal(enabled ? "new_opaque" : null, (string?)reasoningEnd["providerMetadata"]?["openai"]?["nativeItem"]?["encrypted_content"]);
+        if (!enabled) Assert.DoesNotContain("new_opaque", wire);
+
+        var upstream = Assert.Single(host.Requests).Body!;
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expected), upstream["include"]));
+        Assert.Equal(enabled, upstream["input"]!.AsArray().Any(item => (string?)item?["encrypted_content"] == "old_opaque"));
+    }
+
+    [Theory]
     [InlineData("anthropic", "server_tool_use", "srv_1")]
     [InlineData("openai", "file_search_call", "fs_1")]
     public async Task Provider_executed_handles_survive_fresh_host_without_becoming_client_calls(string provider, string type, string id)
