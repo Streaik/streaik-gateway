@@ -7,6 +7,9 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Streaik.Providers;
+using Streaik.Providers.Abliteration;
+using Streaik.Providers.AIMagicx;
+using Streaik.Providers.Speechmatics;
 using Streaik.Providers.Anthropic;
 using Streaik.Providers.AtlasCloud;
 using Streaik.Providers.BlackForestLabs;
@@ -50,7 +53,8 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool nebiusNomicIdeogram = false, bool huggingFaceMixedbreadSegmind = false, bool tetrateUpstageTypecast = false,
         bool akashArceeAsync = false, bool nscaleDigitalOceanSpeechify = false, bool cloudRiftCoralBricksAudixa = false,
         bool crusoeAtlasCloudDeepdub = false, bool doublewordBananaPeelCreora = false, bool akumiClarifaiBespokeLabs = false,
-        bool arkRouteBergetAstica = false, bool bastionTensorUnreal = false, bool aichixiaEdgeSpeakIsaacus = false)
+        bool arkRouteBergetAstica = false, bool bastionTensorUnreal = false, bool aichixiaEdgeSpeakIsaacus = false,
+        bool abliterationAIMagicxSpeechmatics = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -82,6 +86,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (arkRouteBergetAstica) builder.Services.AddArkRoute().AddBergetAI().AddAstica();
         if (bastionTensorUnreal) builder.Services.AddBastionGPT().AddTensorBlock().AddUnrealSpeech();
         if (aichixiaEdgeSpeakIsaacus) builder.Services.AddAichixia().AddEdgeSpeak().AddIsaacus();
+        if (abliterationAIMagicxSpeechmatics) builder.Services.AddAbliteration().AddAIMagicx().AddSpeechmatics();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -109,6 +114,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (arkRouteBergetAstica) ids.AddRange(["arkroute", "bergetai", "astica", "astica-design"]);
         if (bastionTensorUnreal) ids.AddRange(["bastiongpt", "tensorblock", "tensorblock-assets", "unrealspeech", "unrealspeech-assets"]);
         if (aichixiaEdgeSpeakIsaacus) ids.AddRange(["aichixia", "edgespeak", "isaacus"]);
+        if (abliterationAIMagicxSpeechmatics) ids.AddRange(["abliteration", "aimagicx", "speechmatics"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

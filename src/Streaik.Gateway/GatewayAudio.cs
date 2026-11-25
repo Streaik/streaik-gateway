@@ -79,7 +79,7 @@ public static partial class StreaikGateway
         }
         await context.Response.WriteAsJsonAsync(new SpeechResponse { Audio = new() {
             Base64 = Convert.ToBase64String(buffer.GetBuffer(), 0, (int)buffer.Length), MimeType = type,
-            Format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type) },
+            Format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type) },
             ProviderMetadata = (upstream as SpeechProviderResponse)?.ProviderMetadata,
             Response = new() { ModelId = call.Model, Timestamp = DateTime.UtcNow } }, Web, call.Ct);
     }
@@ -120,7 +120,7 @@ public static partial class StreaikGateway
     }
 
     private static Dictionary<string, JsonElement>? SpeechOptions(GatewayCall call, Dictionary<string, JsonElement>? options)
-        => call.ProviderId is "async" or "edgespeak" || call.Get<IStreamingSpeechProvider>() is not null
+        => call.ProviderId is "async" or "edgespeak" or "speechmatics" || call.Get<IStreamingSpeechProvider>() is not null
             ? SelectedOptions(call, options, "model", "input", "response_format", "stream_format", "stream")
             : SelectedOptions(call, options, "model", "input", "voice", "response_format", "stream_format");
 

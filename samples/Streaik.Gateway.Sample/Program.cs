@@ -2,6 +2,9 @@ using Scalar.AspNetCore;
 using Streaik.Gateway;
 using Streaik.Gateway.Sample;
 using Streaik.Providers;
+using Streaik.Providers.Abliteration;
+using Streaik.Providers.AIMagicx;
+using Streaik.Providers.Speechmatics;
 using Streaik.Providers.Anthropic;
 using Streaik.Providers.AtlasCloud;
 using Streaik.Providers.BlackForestLabs;
@@ -53,6 +56,7 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddAkumi().AddClarifai().AddBespokeLabs()
     .AddArkRoute().AddBergetAI().AddAstica()
     .AddBastionGPT().AddTensorBlock().AddUnrealSpeech().AddAichixia().AddIsaacus()
+    .AddAbliteration().AddAIMagicx().AddSpeechmatics()
     .AddStreaikHeaderAuth().AddStreaikReferences();
 if (builder.Configuration.GetValue<bool>("Providers:edgespeak:Enabled")) builder.Services.AddEdgeSpeak();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))

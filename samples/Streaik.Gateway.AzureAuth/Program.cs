@@ -3,6 +3,9 @@ using System.Text.Json;
 using Streaik.Gateway;
 using Streaik.Gateway.AzureAuth;
 using Streaik.Providers;
+using Streaik.Providers.Abliteration;
+using Streaik.Providers.AIMagicx;
+using Streaik.Providers.Speechmatics;
 using Streaik.Providers.Anthropic;
 using Streaik.Providers.AtlasCloud;
 using Streaik.Providers.BlackForestLabs;
@@ -60,7 +63,8 @@ builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGl
     .AddDoubleword().AddBananaPeel().AddCreora()
     .AddAkumi().AddClarifai().AddBespokeLabs()
     .AddArkRoute().AddBergetAI().AddAstica()
-    .AddBastionGPT().AddTensorBlock().AddUnrealSpeech().AddAichixia().AddIsaacus().AddStreaikReferences();
+    .AddBastionGPT().AddTensorBlock().AddUnrealSpeech().AddAichixia().AddIsaacus()
+    .AddAbliteration().AddAIMagicx().AddSpeechmatics().AddStreaikReferences();
 if (builder.Configuration.GetValue<bool>("Providers:edgespeak:Enabled")) builder.Services.AddEdgeSpeak();
 await VaultProviderKeys.LoadAsync(builder);
 
