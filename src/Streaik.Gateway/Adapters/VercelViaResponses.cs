@@ -85,7 +85,9 @@ internal static partial class VercelAdapter
                     case FileUIPart when message.Role == Role.assistant: break;
                     case ToolInvocationPart tool when message.Role == Role.assistant:
                         var (output, _) = ClientToolResult(tool);
-                        input.Add(new ResponseFunctionCallItem { CallId = tool.ToolCallId, Name = ToolName(tool), Arguments = ToolInput(tool.Input).GetRawText() });
+                        input.Add(new ResponseFunctionCallItem { CallId = tool.ToolCallId, Name = ToolName(tool),
+                            Namespace = tool.ToolMetadata?.TryGetValue("namespace", out var space) == true && space.ValueKind == JsonValueKind.String
+                                ? space.GetString() : null, Arguments = ToolInput(tool.Input).GetRawText() });
                         results.Add(new ResponseFunctionCallOutputItem { CallId = tool.ToolCallId, Output = output });
                         break;
                     case StepStartUIPart or StartStepUIPart or SourceUIPart or SourceDocumentPart or MessageMetadataUIPart: break;
@@ -97,8 +99,14 @@ internal static partial class VercelAdapter
         }
 
         if (input.Count == 0) throw new ContractException("At least one message is required.");
-        var tools = (request.Tools ?? []).DistinctBy(tool => tool.Name).Select(tool => ProtocolAdapters.ResponseFunction(tool.Name,
-            tool.Description, tool.InputSchema is null ? null : ToolInput(tool.InputSchema))).ToList();
+        var tools = (request.Tools ?? []).DistinctBy(tool => tool.Name).Select(tool =>
+        {
+            var function = ProtocolAdapters.ResponseFunction(tool.Name, tool.Description, tool.InputSchema is null ? null : ToolInput(tool.InputSchema));
+            var callers = tool.AllowedCallers?.Where(caller => caller is "direct" or "programmatic").Distinct().ToArray();
+            if (callers is { Length: > 0 }) (function.Extra ??= [])["allowed_callers"] = JsonSerializer.SerializeToElement(callers);
+            if (tool.DeferLoading == true) (function.Extra ??= [])["defer_loading"] = JsonSerializer.SerializeToElement(true);
+            return function;
+        }).ToList();
         if (Option(request, call.ProviderId, "tools") is { ValueKind: JsonValueKind.Array } nativeTools)
             tools.AddRange(nativeTools.Deserialize<List<ResponseToolDefinition>>(ResponseJson.Default) ?? []);
         if (protectedContainers)
@@ -166,6 +174,7 @@ internal static partial class VercelAdapter
                     yield return new ToolCallDeltaPart { ToolCallId = handle, InputTextDelta = delta.Delta }; break;
                 case ResponseOutputItemDone { Item: { Type: "function_call", CallId: { } handle } item } when sentCalls.Add(handle):
                     yield return new ToolCallPart { ToolCallId = handle, ToolName = item.Name!, Dynamic = true, ProviderExecuted = false,
+                        ToolMetadata = item.Namespace is { } space ? new() { ["namespace"] = JsonSerializer.SerializeToElement(space) } : null,
                         Input = item.Arguments is { ValueKind: JsonValueKind.String } args ? MessagesHistory.ParseArguments(args.GetString()!) : ToolInput(item.Arguments) };
                     break;
                 case ResponseError or ResponseFailed: throw new IOException("Responses returned a stream error.");
@@ -210,7 +219,8 @@ internal static partial class VercelAdapter
                         break;
                     case ResponseFunctionCallItem function when sentCalls.Add(function.CallId):
                         yield return new ToolCallPart { ToolCallId = function.CallId, ToolName = function.Name, Dynamic = true,
-                            ProviderExecuted = false, Input = MessagesHistory.ParseArguments(function.Arguments) }; break;
+                            ProviderExecuted = false, Input = MessagesHistory.ParseArguments(function.Arguments),
+                            ToolMetadata = function.Namespace is { } functionSpace ? new() { ["namespace"] = JsonSerializer.SerializeToElement(functionSpace) } : null }; break;
                     case ResponseMcpApprovalRequestItem:
                         yield return new ErrorUIPart { ErrorText = "This provider tool requires execution approval, which API Chat does not support." };
                         yield break;

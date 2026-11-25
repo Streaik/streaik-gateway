@@ -27,7 +27,11 @@ internal static partial class VercelAdapter
             .Where(tool => tool.Approval is not null || tool.State is "approval-requested" or "approval-responded").ToList();
         if (reviews.Any(tool => tool.ProviderExecuted == true))
             throw new ContractException("API Chat only accepts client tool result approvals.");
-        var reviewClientTools = request.ClientToolResultApproval && request.Tools is { Count: > 0 };
+        var reviewNames = request.ClientToolResultApproval
+            ? (request.Tools ?? []).Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal) : [];
+        if (request.ClientToolResultApproval && !call.PreferChatBridge && call.Get<IResponsesProvider>() is not null)
+            reviewNames.UnionWith(NamespaceFunctions(request, call.ProviderId));
+        var reviewClientTools = reviewNames.Count > 0;
         // A registered, user-bound signer can be unavailable for requests without a subject.
         // That is distinct from a host intentionally running with signing disabled.
         if (signer is null && (reviewClientTools || reviews.Count != 0)
@@ -70,8 +74,24 @@ internal static partial class VercelAdapter
             return;
         }
         if (reviewClientTools)
-            stream = ReviewClientResults(stream, request.Tools!.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal), call.Ct);
+            stream = ReviewClientResults(stream, reviewNames, call.Ct);
         await call.WriteVercelStreamAsync(signer is null ? stream : signer.SignOutgoing(stream, call.Ct));
+    }
+
+    private static IEnumerable<string> NamespaceFunctions(ChatRequest request, string provider)
+    {
+        if (Option(request, provider, "tools") is not { ValueKind: JsonValueKind.Array } tools) yield break;
+        foreach (var entry in tools.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object || !entry.TryGetProperty("type", out var type)
+                || type.ValueKind != JsonValueKind.String || !type.ValueEquals("namespace")
+                || !entry.TryGetProperty("tools", out var functions) || functions.ValueKind != JsonValueKind.Array) continue;
+            foreach (var function in functions.EnumerateArray())
+                if (function.ValueKind == JsonValueKind.Object && function.TryGetProperty("type", out var functionType)
+                    && functionType.ValueKind == JsonValueKind.String && functionType.ValueEquals("function")
+                    && function.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                    yield return name.GetString()!;
+        }
     }
 
     private static async IAsyncEnumerable<UIMessagePart> ReviewClientResults(IAsyncEnumerable<UIMessagePart> stream,
