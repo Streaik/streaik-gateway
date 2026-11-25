@@ -98,6 +98,78 @@ public sealed class ChatRoutingTests
     }
 
     [Theory]
+    [InlineData("cerebras", "gpt-oss-120b", """{"reasoning_effort":"high","seed":0,"parallel_tool_calls":false}""")]
+    [InlineData("together", "openai/gpt-oss-120b", """{"reasoning_effort":"medium"}""")]
+    public async Task Vercel_native_options_override_generation_not_the_chat_envelope(string provider, string model, string fields)
+    {
+        await using var host = await FixtureHost.StartAsync(FixtureHost.Reply, compatibleChat: true);
+        var body = Body(Web, $"{provider}/{model}", true);
+        body["temperature"] = 0.9;
+        var options = JsonNode.Parse(fields)!.AsObject();
+        options["temperature"] = 0.25;
+        options["future_option"] = JsonNode.Parse("""{"values":[0,false,null,{"native_field":"unchanged"}]}""");
+        body["providerMetadata"] = new JsonObject
+        {
+            ["openai"] = new JsonObject { ["not_for_this_provider"] = true },
+            [provider] = options.DeepClone()
+        };
+        var supplied = (JsonObject)body["providerMetadata"]![provider]!;
+        supplied["MODEL"] = "not-the-model";
+        supplied["messages"] = new JsonArray();
+        supplied["stream"] = false;
+        supplied["store"] = true;
+        supplied["headers"] = new JsonObject { ["Authorization"] = "not-the-key" };
+
+        using var response = await host.PostAsync(Web, body.ToJsonString(), ($"X-{provider}-Key", "fixture-key"));
+        Assert.Contains("hello", await GatewayTests.Success(response));
+        var sent = Assert.Single(host.Requests);
+        Assert.Equal(Chat, sent.Path);
+        Assert.Equal(model, (string?)sent.Body!["model"]);
+        Assert.True(sent.Stream);
+        Assert.Contains("test", sent.Body["messages"]!.ToJsonString());
+        Assert.Equal("Bearer fixture-key", sent.Headers["Authorization"]);
+        foreach (var (key, expected) in options)
+            Assert.True(JsonNode.DeepEquals(expected, sent.Body[key]), $"Unexpected native field {key}: {sent.Body[key]}");
+        Assert.All(new[] { "MODEL", "store", "headers", "not_for_this_provider" }, key => Assert.False(sent.Body.AsObject().ContainsKey(key)));
+    }
+
+    [Fact]
+    public async Task Vercel_responses_preserves_native_options_and_combines_native_and_client_tools()
+    {
+        await using var host = await FixtureHost.StartAsync();
+        var body = Body(Web, "openai/gpt-5", true);
+        body["maxOutputTokens"] = 16;
+        body["tools"] = JsonNode.Parse("""[{"name":"lookup","inputSchema":{"type":"object"}}]""");
+        var options = JsonNode.Parse("""
+            {"reasoning":{"effort":"low","summary":"auto"},"service_tier":"flex","parallel_tool_calls":false,
+             "context_management":[{"type":"compaction","compact_threshold":4096}],"max_output_tokens":32,
+             "moderation":{"model":"omni-moderation-latest","policy":{"input":{"mode":"block"}}},
+             "prompt_cache_options":{"mode":"implicit","ttl":"30m"},"native_future":{"with_null":null,"enabled":false}}
+            """)!.AsObject();
+        var supplied = (JsonObject)options.DeepClone();
+        supplied["tools"] = JsonNode.Parse("""[{"type":"web_search","search_context_size":"low"}]""");
+        supplied["include"] = JsonNode.Parse("""["web_search_call.action.sources"]""");
+        supplied["input"] = "not-the-user-input";
+        supplied["Store"] = true;
+        supplied["previous_response_id"] = "resp_unused";
+        body["providerMetadata"] = new JsonObject { ["openai"] = supplied };
+
+        using var response = await host.PostAsync(Web, body.ToJsonString(), ("X-OpenAI-Key", "fixture-key"));
+        Assert.Contains("hello", await GatewayTests.Success(response));
+        var sent = Assert.Single(host.Requests);
+        Assert.Equal(Responses, sent.Path);
+        Assert.True(sent.Stream);
+        Assert.False((bool)sent.Body!["store"]!);
+        Assert.False(sent.Body.AsObject().ContainsKey("previous_response_id"));
+        Assert.Contains("test", sent.Body["input"]!.ToJsonString());
+        foreach (var (key, expected) in options)
+            Assert.True(JsonNode.DeepEquals(expected, sent.Body[key]), $"Unexpected native field {key}: {sent.Body[key]}");
+        Assert.Equal("lookup", (string?)sent.Body["tools"]![0]!["name"]);
+        Assert.True(JsonNode.DeepEquals(supplied["tools"]![0], sent.Body["tools"]![1]));
+        Assert.Contains(sent.Body["include"]!.AsArray(), value => (string?)value == "reasoning.encrypted_content");
+    }
+
+    [Theory]
     [InlineData(Responses, "response.function_call_arguments.delta", "response.completed")]
     [InlineData(Messages, "input_json_delta", "message_stop")]
     [InlineData(Web, "tool-input-delta", "tool-input-available")]

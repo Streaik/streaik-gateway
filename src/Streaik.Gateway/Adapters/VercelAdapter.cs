@@ -12,6 +12,12 @@ internal static partial class VercelAdapter
     private const string NativeBlock = "nativeBlock";
     private const string NativeItem = "nativeItem";
     private static readonly JsonSerializerOptions Web = JsonSerializerOptions.Web;
+    private static readonly HashSet<string> OwnedRequestFields = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "model", "input", "messages", "instructions", "prompt", "stream", "stream_options", "store", "background",
+        "previous_response_id", "conversation", "include", "tools", "tool_choice",
+        "authorization", "api_key", "apiKey", "x-api-key", "headers"
+    };
 
     public static async Task RunAsync(GatewayCall call, ChatRequest request)
     {
@@ -48,7 +54,7 @@ internal static partial class VercelAdapter
                 throw new ContractException("Provider-specific Vercel options require a native adapter.");
             var translatePresentation = call.ProviderId == "cohere";
             var native = ChatCompletionsBridge.Request(MessagesRequestFrom(call, request, viaChat: true), request.MaxOutputTokens, translatePresentation);
-            if (nativeOptions) native.AdditionalProperties = NativeOptions<ChatCompletionOptions>(call, request, Web);
+            if (nativeOptions) native.AdditionalProperties = ApplyNativeOptions(call, request, native, Web);
             stream = MessageParts(call, request, ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), nativeOptions,
                 translatePresentation: translatePresentation));
         }
@@ -93,15 +99,24 @@ internal static partial class VercelAdapter
         => request.ProviderMetadata?.TryGetValue(provider, out var value) == true && value.ValueKind == JsonValueKind.Object
             && value.TryGetProperty(key, out var setting) ? setting : null;
 
-    private static Dictionary<string, JsonElement>? NativeOptions<T>(GatewayCall call, ChatRequest request, JsonSerializerOptions json)
+    private static Dictionary<string, JsonElement>? ApplyNativeOptions<T>(GatewayCall call, ChatRequest request, T native, JsonSerializerOptions json)
+        where T : class
     {
         if (request.ProviderMetadata?.TryGetValue(call.ProviderId, out var options) != true) return null;
         if (options.ValueKind != JsonValueKind.Object) throw new ContractException("Provider-specific chat options must be an object.");
-        // Never use extension data to override typed request fields, even when they would be omitted on serialization.
-        var reserved = json.GetTypeInfo(typeof(T)).Properties.Select(property => property.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var contract = json.GetTypeInfo(typeof(T)).Properties.ToDictionary(property => property.Name, StringComparer.OrdinalIgnoreCase);
         var extensions = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         foreach (var property in options.EnumerateObject())
-            if (!reserved.Contains(property.Name)) extensions[property.Name] = property.Value;
+        {
+            if (OwnedRequestFields.Contains(property.Name) || property.Name.Equals(call.ProviderId, StringComparison.OrdinalIgnoreCase)) continue;
+            // The protocol's own JSON contract handles known fields; future fields remain raw JSON.
+            if (!contract.TryGetValue(property.Name, out var field)) extensions[property.Name] = property.Value;
+            else if (!field.IsExtensionData && field.Set is { } set)
+            {
+                try { set(native, property.Value.Deserialize(field.PropertyType, json)); }
+                catch (JsonException) { throw new ContractException($"Invalid provider option '{field.Name}'."); }
+            }
+        }
         return extensions;
     }
 

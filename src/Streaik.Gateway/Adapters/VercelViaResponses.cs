@@ -104,16 +104,19 @@ internal static partial class VercelAdapter
         object? textOptions = request.Verbosity is null ? null : new { verbosity = request.Verbosity };
         if (request.ResponseFormat is not null)
             throw new ContractException("This Vercel adapter does not translate response_format.");
-        return new ResponseRequest
+        var nativeOptions = call.Get<INativeChatOptionsProvider>() is not null;
+        var upstream = new ResponseRequest
         {
             Model = call.NativeModel, Store = false, Stream = true, Input = new ResponseInput(input), Temperature = request.Temperature,
             TopP = request.TopP, MaxOutputTokens = request.MaxOutputTokens, MaxToolCalls = request.MaxToolCalls, Include = include, Text = textOptions,
             Tools = tools.Count == 0 ? null : tools, ToolChoice = request.ToolChoice switch
                 { null => null, "auto" or "required" or "none" => request.ToolChoice, { } name => new { type = "function", name } },
-            Reasoning = Option(request, call.ProviderId, "reasoning") is { ValueKind: JsonValueKind.Object } reasoning
-                ? reasoning.Deserialize<Reasoning>(ResponseJson.Default) : null,
-            AdditionalProperties = call.Get<INativeChatOptionsProvider>() is null ? null : NativeOptions<ResponseRequest>(call, request, ResponseJson.Default)
+            Reasoning = !nativeOptions && Option(request, call.ProviderId, "reasoning") is { ValueKind: JsonValueKind.Object } reasoning
+                ? reasoning.Deserialize<Reasoning>(ResponseJson.Default) : null
         };
+        if (nativeOptions)
+            upstream.AdditionalProperties = ApplyNativeOptions(call, request, upstream, ResponseJson.Default);
+        return upstream;
     }
 
     private static async IAsyncEnumerable<UIMessagePart> ResponseParts(GatewayCall call, ChatRequest request,
