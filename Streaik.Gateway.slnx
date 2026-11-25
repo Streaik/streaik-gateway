@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Streaik.Gateway/Streaik.Gateway.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Streaik.Gateway.AzureAuth/Streaik.Gateway.AzureAuth.csproj" />
+    <Project Path="samples/Streaik.Gateway.Sample/Streaik.Gateway.Sample.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Streaik.Gateway.Tests/Streaik.Gateway.Tests.csproj" />
+  </Folder>
+</Solution>
