@@ -9,6 +9,49 @@ public sealed class VercelReplayTests
 {
     private const string Route = "/api/chat";
 
+    [Fact]
+    public async Task Client_tool_options_namespaces_and_approval_survive_the_Responses_bridge()
+    {
+        var request = GatewayTests.Request(Route, "openai/test", true);
+        request["clientToolResultApproval"] = true;
+        request["tools"] = JsonNode.Parse("""[{"name":"ordinary","inputSchema":{"type":"object"},"allowed_callers":["programmatic"],"defer_loading":true}]""");
+        request["providerMetadata"] = JsonNode.Parse("""
+            {"openai":{"tools":[{"type":"namespace","name":"inventory","description":"Inventory tools",
+            "tools":[{"type":"function","name":"lookup","parameters":{"type":"object"},"allowed_callers":["direct"]}]}]}}
+            """);
+        var key = ("X-OpenAI-Key", "fixture-key");
+        JsonNode metadata;
+        await using (var host = await FixtureHost.StartAsync(_ => EndResponse("""
+            {"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","namespace":"inventory","arguments":"{}"}
+            """)))
+        {
+            using var response = await host.PostAsync(Route, request.ToJsonString(), key);
+            var wire = await GatewayTests.Success(response);
+            var input = GatewayTests.Part(wire, "tool-input-available");
+            Assert.Equal("call_1", (string?)GatewayTests.Part(wire, "tool-approval-request")["toolCallId"]);
+            Assert.Equal("inventory", (string?)input["toolMetadata"]?["namespace"]);
+            metadata = input["toolMetadata"]!.DeepClone();
+            var tools = Assert.Single(host.Requests).Body!["tools"]!.AsArray();
+            Assert.Equal("programmatic", (string?)tools[0]?["allowed_callers"]?[0]);
+            Assert.True(tools[0]!["defer_loading"]!.GetValue<bool>());
+            Assert.Equal("direct", (string?)tools[1]?["tools"]?[0]?["allowed_callers"]?[0]);
+        }
+
+        var invocation = JsonNode.Parse("""
+            {"type":"dynamic-tool","toolName":"lookup","toolCallId":"call_1","state":"output-available","input":{},"output":{"ok":true}}
+            """)!;
+        invocation["toolMetadata"] = metadata;
+        request["messages"]!.AsArray().Add(new JsonObject { ["id"] = "reply", ["role"] = "assistant", ["parts"] = new JsonArray(invocation) });
+        await using var replay = await FixtureHost.StartAsync();
+        using var continuation = await replay.PostAsync(Route, request.ToJsonString(), key);
+        await GatewayTests.Success(continuation);
+        var upstream = Assert.Single(replay.Requests).Body!["input"]!.AsArray();
+        var call = Assert.Single(upstream, item => (string?)item?["type"] == "function_call");
+        Assert.Equal("inventory", (string?)call?["namespace"]);
+        Assert.Equal("call_1", (string?)call?["call_id"]);
+        Assert.Contains(upstream, item => (string?)item?["type"] == "function_call_output" && (string?)item?["call_id"] == "call_1");
+    }
+
     [Theory]
     [InlineData(null, """["reasoning.encrypted_content"]""", true)]
     [InlineData("""["file_search_call.results","reasoning.encrypted_content"]""", """["file_search_call.results","reasoning.encrypted_content"]""", true)]
