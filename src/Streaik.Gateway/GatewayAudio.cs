@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using Streaik.Core.Models;
 using Streaik.OpenAI.Models;
 using Streaik.Providers;
 using Streaik.Vercel.Models;
@@ -79,7 +80,7 @@ public static partial class StreaikGateway
         }
         await context.Response.WriteAsJsonAsync(new SpeechResponse { Audio = new() {
             Base64 = Convert.ToBase64String(buffer.GetBuffer(), 0, (int)buffer.Length), MimeType = type,
-            Format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type) },
+            Format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" or "bineric" ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type) },
             ProviderMetadata = (upstream as SpeechProviderResponse)?.ProviderMetadata,
             Response = new() { ModelId = call.Model, Timestamp = DateTime.UtcNow } }, Web, call.Ct);
     }
@@ -111,7 +112,7 @@ public static partial class StreaikGateway
         await Part(new SpeechResponseMetadataPart { ModelId = call.Model, Timestamp = DateTime.UtcNow });
         await using var stream = await upstream.Content.ReadAsStreamAsync(call.Ct);
         var chunk = new byte[16384];
-        var format = call.ProviderId == "unrealspeech" ? AudioFormatName(type) : request.OutputFormat?.Type ?? AudioFormatName(type);
+        var format = call.ProviderId is "unrealspeech" or "bineric" ? AudioFormatName(type) : request.OutputFormat?.Type ?? AudioFormatName(type);
         while (await stream.ReadAsync(chunk, call.Ct) is > 0 and var length)
             await Part(new SpeechAudioPart { Audio = Convert.ToBase64String(chunk, 0, length), AudioFormat = new() { Type = format } });
         await Part(new SpeechFinishPart { ProviderMetadata = (upstream as SpeechProviderResponse)?.ProviderMetadata });
@@ -161,13 +162,22 @@ public static partial class StreaikGateway
         }
         var format = form["response_format"].ToString();
         if (format is not ("" or "json" or "text" or "verbose_json")) throw new ContractException("Unsupported transcription response format.");
-        if (form["stream"] == "true") throw new ContractException("Use the streaming transcription route.");
+        var stream = form["stream"] == "true";
+        if (stream && call.ProviderId != "bineric") throw new ContractException("Use the streaming transcription route.");
+        if (stream && format is not ("" or "json")) throw new ContractException("Streaming transcription requires JSON response format.");
         var options = form.Where(k => k.Key is not ("model" or "file" or "language" or "response_format" or "stream"))
             .ToDictionary(k => k.Key, k => JsonSerializer.SerializeToElement(k.Value.ToString()));
         await using var audio = file.OpenReadStream();
         var result = await call.Require<ITranscriptionProvider>().TranscribeAsync(call.NativeModel, audio, file.ContentType, file.FileName,
             form["language"], options, call.Headers, call.Ct);
-        if (format == "text") { context.Response.ContentType = "text/plain; charset=utf-8"; await context.Response.WriteAsync(result.Text, call.Ct); }
+        if (stream)
+        {
+            StartMediaStream(call);
+            if (!string.IsNullOrWhiteSpace(result.Text)) await GatewayCall.WriteFrameAsync(context.Response,
+                JsonSerializer.Serialize(new OpenAITranscriptionTextDelta { Delta = result.Text }, Web), null, call.Ct);
+            await GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(new OpenAITranscriptionTextDone { Text = result.Text }, Web), null, call.Ct);
+        }
+        else if (format == "text") { context.Response.ContentType = "text/plain; charset=utf-8"; await context.Response.WriteAsync(result.Text, call.Ct); }
         else if (format == "verbose_json") await context.Response.WriteAsJsonAsync(new { text = result.Text, duration = result.DurationInSeconds,
             language = result.Language, segments = result.Segments.Select((x, i) => new { id = i, start = x.StartSecond, end = x.EndSecond, text = x.Text }) }, Web, call.Ct);
         else await context.Response.WriteAsJsonAsync(new { text = result.Text }, Web, call.Ct);

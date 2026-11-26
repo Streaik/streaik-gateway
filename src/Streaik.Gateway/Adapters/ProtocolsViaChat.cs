@@ -76,6 +76,8 @@ internal static partial class ProtocolAdapters
         if (native.ValueKind != JsonValueKind.Object) throw new ContractException("Provider-specific chat options must be an object.");
         var reserved = JsonSerializerOptions.Web.GetTypeInfo(typeof(ChatCompletionOptions)).Properties
             .Select(property => property.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        reserved.UnionWith([provider, "background", "previous_response_id", "conversation", "input", "authorization",
+            "api-key", "api_key", "apiKey", "x-api-key", "headers"]);
         // The normal adapters still validate every extension outside the selected provider's namespace.
         return native.EnumerateObject().Where(field => !reserved.Contains(field.Name))
             .ToDictionary(field => field.Name, field => field.Value, StringComparer.Ordinal);
