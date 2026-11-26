@@ -155,7 +155,7 @@ public sealed class RealtimeProviderTests
             _ => throw new InvalidOperationException(request.Path)
         });
         using var live = await host.PostAsync("/v1/live/sessions", """
-            {"session":{"model":"openai/gpt-realtime","instructions":"be concise"},"transport":{"type":"webrtc","sdp":"offer"}}
+            {"session":{"model":"openai/gpt-live-1","instructions":"be concise","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"earlier"}]}],"delegation":{"type":"responses","responses":{"model":"gpt-5-mini","parallel_tool_calls":false}}},"transport":{"type":"webrtc","sdp":"offer"}}
             """, ("X-OpenAI-Key", "fixture"));
         Assert.Equal(HttpStatusCode.Created, live.StatusCode);
         Assert.True(live.Headers.CacheControl?.NoStore);
@@ -163,7 +163,11 @@ public sealed class RealtimeProviderTests
         using var secret = await host.PostAsync("/v1/realtime/client_secrets", """{"session":{"model":"openai/gpt-realtime"}}""", ("X-OpenAI-Key", "fixture"));
         Assert.True(secret.Headers.CacheControl?.NoStore);
         Assert.Equal("openai/gpt-realtime", (string?)JsonNode.Parse(await GatewayTests.Success(secret))!["session"]!["model"]);
-        Assert.All(host.Requests, request => Assert.Equal("gpt-realtime", (string?)request.Body!["session"]!["model"]));
+        Assert.Equal("gpt-live-1", (string?)host.Requests.First().Body!["session"]!["model"]);
+        Assert.False((bool?)host.Requests.First().Body!["session"]!["store"]);
+        Assert.Equal("earlier", (string?)host.Requests.First().Body!["session"]!["input"]![0]!["content"]![0]!["text"]);
+        Assert.Equal("gpt-5-mini", (string?)host.Requests.First().Body!["session"]!["delegation"]!["responses"]!["model"]);
+        Assert.Equal("gpt-realtime", (string?)host.Requests.Last().Body!["session"]!["model"]);
         using var webRtc = await host.PostAsync("/api/realtime/session/openai/gpt-realtime", """{"sdp":"offer"}""", ("X-OpenAI-Key", "fixture"));
         Assert.True(webRtc.Headers.CacheControl?.NoStore);
         var result = JsonNode.Parse(await GatewayTests.Success(webRtc))!;
@@ -176,5 +180,33 @@ public sealed class RealtimeProviderTests
             response.Headers.Location = new Uri("/v1/realtime/calls/call_1", UriKind.Relative);
             return response;
         }
+    }
+
+    [Theory]
+    [InlineData("/api/realtime/token/openai/gpt-realtime", "token", "expiresAt", """
+        {"sessionConfig":{"providerOptions":{"openai":{"audio":{"input":{"turn_detection":null}}}}}}
+        """)]
+    [InlineData("/v1/realtime/client_secrets", "value", "expires_at", """
+        {"expires_after":{"anchor":"created_at","seconds":120},"session":{"type":"realtime","model":"openai/gpt-realtime","audio":{"input":{"turn_detection":null}}}}
+        """)]
+    public async Task OpenAI_conversation_tokens_preserve_settings_and_scope_auth(string endpoint, string tokenField, string expiryField, string body)
+    {
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""{"value":"temporary","expires_at":1999999999}"""));
+        using var response = await host.PostAsync(endpoint, body, ("X-OpenAI-Key", "fixture"), ("X-Gladia-Key", "unrelated"));
+        var result = JsonNode.Parse(await GatewayTests.Success(response))!;
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Equal("temporary", (string?)result[tokenField]);
+        Assert.Equal(1999999999L, (long?)result[expiryField]);
+        var upstream = Assert.Single(host.Requests);
+        Assert.Equal("/v1/realtime/client_secrets", upstream.Path);
+        Assert.Equal("Bearer fixture", upstream.Headers["Authorization"]);
+        Assert.DoesNotContain("X-Gladia-Key", upstream.Headers.Keys, StringComparer.OrdinalIgnoreCase);
+        var session = upstream.Body!["session"]!;
+        Assert.Equal("gpt-realtime", (string?)session["model"]);
+        Assert.Equal("realtime", (string?)session["type"]);
+        var audio = Assert.IsType<JsonObject>(session["audio"]!["input"]);
+        Assert.True(audio.ContainsKey("turn_detection"));
+        Assert.Null(audio["turn_detection"]);
+        if (tokenField == "value") Assert.Equal(120, (int?)upstream.Body!["expires_after"]!["seconds"]);
     }
 }
