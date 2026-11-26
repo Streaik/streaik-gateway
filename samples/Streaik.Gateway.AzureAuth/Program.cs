@@ -66,7 +66,8 @@ builder.Services.AddEcho().AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgr
     .AddBastionGPT().AddTensorBlock().AddUnrealSpeech().AddAichixia().AddIsaacus()
     .AddAbliteration().AddAIMagicx().AddSpeechmatics()
     .AddDandolo().AddBineric().AddAstria()
-    .AddASIOne().AddRime().AddStabilityAI().AddStreaikReferences();
+    .AddASIOne().AddRime().AddStabilityAI()
+    .AddAvian().AddFishAudio().AddLumaAI().AddStreaikReferences();
 if (builder.Configuration.GetValue<bool>("Providers:edgespeak:Enabled")) builder.Services.AddEdgeSpeak();
 await VaultProviderKeys.LoadAsync(builder);
 

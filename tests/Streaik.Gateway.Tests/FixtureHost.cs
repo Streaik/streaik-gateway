@@ -54,7 +54,8 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool akashArceeAsync = false, bool nscaleDigitalOceanSpeechify = false, bool cloudRiftCoralBricksAudixa = false,
         bool crusoeAtlasCloudDeepdub = false, bool doublewordBananaPeelCreora = false, bool akumiClarifaiBespokeLabs = false,
         bool arkRouteBergetAstica = false, bool bastionTensorUnreal = false, bool aichixiaEdgeSpeakIsaacus = false,
-        bool abliterationAIMagicxSpeechmatics = false, bool dandoloBinericAstria = false, bool asiOneRimeStabilityAI = false)
+        bool abliterationAIMagicxSpeechmatics = false, bool dandoloBinericAstria = false, bool asiOneRimeStabilityAI = false,
+        bool avianFishAudioLumaAI = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -89,6 +90,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (abliterationAIMagicxSpeechmatics) builder.Services.AddAbliteration().AddAIMagicx().AddSpeechmatics();
         if (dandoloBinericAstria) builder.Services.AddDandolo().AddBineric().AddAstria();
         if (asiOneRimeStabilityAI) builder.Services.AddASIOne().AddRime().AddStabilityAI();
+        if (avianFishAudioLumaAI) builder.Services.AddAvian().AddFishAudio().AddLumaAI();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -119,6 +121,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (abliterationAIMagicxSpeechmatics) ids.AddRange(["abliteration", "aimagicx", "speechmatics"]);
         if (dandoloBinericAstria) ids.AddRange(["dandolo", "bineric", "astria", "astria-delivery"]);
         if (asiOneRimeStabilityAI) ids.AddRange(["asione", "rime", "stabilityai"]);
+        if (avianFishAudioLumaAI) ids.AddRange(["avian", "fishaudio", "lumaai", "lumaai-delivery"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

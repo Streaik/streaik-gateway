@@ -13,7 +13,9 @@ public static partial class StreaikGateway
 {
     private const string VideoTool = "generate_video";
 
-    private static IVideoProvider? AstriaVideo(GatewayCall call) => call.ProviderId == "astria" ? call.Get<IVideoProvider>() : null;
+    private static IVideoProvider? VideoRoute(GatewayCall call)
+        => call.ProviderId == "astria" || (call.ProviderId, call.NativeModel) is ("lumaai", "ray-3.2")
+            ? call.Get<IVideoProvider>() : null;
 
     private static Task VideoViaVercelAsync(GatewayCall call, ChatRequest request, IVideoProvider provider)
     {
@@ -53,7 +55,7 @@ public static partial class StreaikGateway
 
     private static Task VideoViaChatAsync(GatewayCall call, ChatCompletionOptions request, IVideoProvider provider)
     {
-        if (request.Stream != true) throw new ContractException("Astria video Chat Completions require streaming. Alternatively, use the video endpoint.", 422);
+        if (request.Stream != true) throw new ContractException("Video Chat Completions require streaming. Alternatively, use the video endpoint.", 422);
         if (request.Tools?.Any() == true || request.Functions?.Any() == true || request.ResponseFormat is not null || request.NumberOfChoices is > 1)
             throw new ContractException("Video turns do not support tools, structured output, or multiple choices.", 422);
         var content = (request.Messages.LastOrDefault(message => message.Role == "user") ?? throw UnsupportedVideoPart()).Content;
@@ -93,7 +95,7 @@ public static partial class StreaikGateway
 
     private static Task VideoViaResponsesAsync(GatewayCall call, ResponseRequest request, IVideoProvider provider)
     {
-        if (request.Stream != true) throw new ContractException("Astria video Responses require streaming. Alternatively, use the video endpoint.", 422);
+        if (request.Stream != true) throw new ContractException("Video Responses require streaming. Alternatively, use the video endpoint.", 422);
         if (request.Tools?.Count > 0 || request.Reasoning is not null || request.Text is not null)
             throw new ContractException("Video turns do not support tools, reasoning, or structured output.", 422);
         var content = request.Input?.Items?.OfType<ResponseInputMessage>().LastOrDefault(message => message.Role == ResponseRole.User)?.Content;

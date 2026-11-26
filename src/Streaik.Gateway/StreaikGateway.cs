@@ -93,7 +93,7 @@ public static partial class StreaikGateway
         request.Store = false;
         request.Model = call.NativeModel;
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ChatAsync(call, request, image); return; }
-        if (AstriaVideo(call) is { } video) { await VideoViaChatAsync(call, request, video); return; }
+        if (VideoRoute(call) is { } video) { await VideoViaChatAsync(call, request, video); return; }
         if (await TryChatAudioAsync(call, request)) return;
         if (call.Get<IChatCompletionsProvider>() is not { } native)
         {
@@ -121,7 +121,7 @@ public static partial class StreaikGateway
         if (UseSpeechFileAdapter(call)) { await SpeechViaResponsesAsync(call, request); return; }
         if (UseTranscriptionFileAdapter(call)) { await TranscriptionViaResponsesAsync(call, request); return; }
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ResponsesAsync(call, request, image); return; }
-        if (AstriaVideo(call) is { } video) { await VideoViaResponsesAsync(call, request, video); return; }
+        if (VideoRoute(call) is { } video) { await VideoViaResponsesAsync(call, request, video); return; }
         if (call.Get<IResponsesProvider>() is not { } native)
         {
             if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages) await ProtocolAdapters.ResponsesViaMessagesAsync(call, request, messages);
@@ -144,7 +144,7 @@ public static partial class StreaikGateway
         if (UseSpeechFileAdapter(call)) { await SpeechViaMessagesAsync(call, request); return; }
         if (UseTranscriptionFileAdapter(call)) { await TranscriptionViaMessagesAsync(call, request); return; }
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.MessagesAsync(call, request, image); return; }
-        if (AstriaVideo(call) is not null) throw new ContractException("Use the video endpoint for Astria video with Messages.", 422);
+        if (VideoRoute(call) is not null) throw new ContractException("Use the video endpoint for video generation with Messages.", 422);
         if (call.Get<IMessagesProvider>() is not { } native)
         {
             if (!call.PreferChatBridge && call.Get<IResponsesProvider>() is { } responses) await ProtocolAdapters.MessagesViaResponsesAsync(call, request, responses);
@@ -164,7 +164,7 @@ public static partial class StreaikGateway
             throw new ContractException("reasoning must be null, low, medium, or high.");
         var call = new GatewayCall(context, request.Model);
         if (await ImageRouteAsync(call) is { } image) await ImageAdapters.VercelAsync(call, request, image);
-        else if (AstriaVideo(call) is { } video) await VideoViaVercelAsync(call, request, video);
+        else if (VideoRoute(call) is { } video) await VideoViaVercelAsync(call, request, video);
         else if (!await TryVercelAudioChatAsync(call, request)) await VercelAdapter.RunAsync(call, request);
     }
 
