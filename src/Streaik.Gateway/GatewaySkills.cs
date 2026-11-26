@@ -31,8 +31,11 @@ public static partial class StreaikGateway
     private static IEnumerable<string> SkillProviderIds(HttpContext context)
         => context.RequestServices.GetServices<ProviderRegistration>().Select(x => x.Id);
 
-    private static bool HasSkillKey(HttpContext context, string id)
-        => !string.IsNullOrWhiteSpace(context.RequestServices.GetService<IProviderCredentials>()?.GetApiKey(id));
+    private static bool CredentialFreeSkill(HttpContext context, string id)
+        => context.RequestServices.GetKeyedService<ILocalFixtureProvider>(id) is not null;
+
+    private static bool HasSkillAccess(HttpContext context, string id)
+        => CredentialFreeSkill(context, id) || !string.IsNullOrWhiteSpace(context.RequestServices.GetService<IProviderCredentials>()?.GetApiKey(id));
 
     private static string SkillRouteValue(HttpContext context, string name)
         => context.Request.RouteValues[name] is string value && ValidSkillSegment(value) ? value
@@ -59,7 +62,7 @@ public static partial class StreaikGateway
         var data = new List<ProviderSkill>();
         foreach (var id in SkillProviderIds(context))
         {
-            if (!HasSkillKey(context, id) || context.RequestServices.GetKeyedService<ISkillReadProvider>(id) is not { } reader) continue;
+            if (!HasSkillAccess(context, id) || context.RequestServices.GetKeyedService<ISkillReadProvider>(id) is not { } reader) continue;
             try
             {
                 await foreach (var skill in reader.ListSkillsAsync(ct).WithCancellation(ct))
@@ -102,7 +105,7 @@ public static partial class StreaikGateway
     {
         var byok = context.RequestServices.GetService<IProviderCredentials>() is IHeaderProviderCredentials;
         var destinations = byok || context.User.Identity?.IsAuthenticated == true
-            ? SkillProviderIds(context).Where(id => HasSkillKey(context, id) &&
+            ? SkillProviderIds(context).Where(id => HasSkillAccess(context, id) &&
                 context.RequestServices.GetKeyedService<ISkillUploadProvider>(id) is not null).Order(StringComparer.Ordinal).ToArray()
             : [];
         return WriteSkillsAsync(context, new SkillDestinations(byok ? "provider-key" : "provider-header", destinations));
@@ -116,10 +119,14 @@ public static partial class StreaikGateway
         string id;
         if (credentials is IHeaderProviderCredentials)
         {
-            if (selector.Count != 0) throw new ContractException("Select an upload destination with its provider key header only.");
             var selected = SkillProviderIds(context).Where(p => headers.ContainsKey($"x-{p}-key")).ToArray();
-            if (selected.Length != 1) throw new ContractException("Send exactly one provider key header for this upload.");
-            id = selected[0];
+            if (selector.Count == 1 && selector[0] is { } local && selected.Length == 0 && CredentialFreeSkill(context, local)) id = local;
+            else
+            {
+                if (selector.Count != 0) throw new ContractException("Select an upload destination with its provider key header only.");
+                if (selected.Length != 1) throw new ContractException("Send exactly one provider key header for this upload.");
+                id = selected[0];
+            }
         }
         else
         {
@@ -131,7 +138,7 @@ public static partial class StreaikGateway
 
         var provider = context.RequestServices.GetKeyedService<ISkillUploadProvider>(id)
             ?? throw new ContractException("The selected provider does not accept skill uploads.", 404);
-        if (!HasSkillKey(context, id)) throw new ProviderCredentialException(id);
+        if (!HasSkillAccess(context, id)) throw new ProviderCredentialException(id);
         // Don't mark an ActiveProvider: Authorization is never an upstream skill upload key.
         var archive = await ReadSkillUploadAsync(context.Request, context.RequestAborted);
         var skill = await provider.UploadSkillAsync(archive, context.RequestAborted);

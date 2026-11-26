@@ -40,18 +40,24 @@ internal sealed class GatewayReferences(GatewayCall call, string purpose)
     private static string CallerBinding(GatewayCall call)
     {
         var resolver = call.Context.RequestServices.GetService<IProviderCredentials>();
-        var key = resolver?.GetApiKey(call.ProviderId);
-        if (string.IsNullOrWhiteSpace(key)) throw new ProviderCredentialException(call.ProviderId);
-        var keyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+        var local = call.Get<ILocalFixtureProvider>() is not null;
+        var binding = "local-fixture";
+        if (!local)
+        {
+            var key = resolver?.GetApiKey(call.ProviderId);
+            if (string.IsNullOrWhiteSpace(key)) throw new ProviderCredentialException(call.ProviderId);
+            binding = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+        }
         var user = call.Context.User;
         if (user.Identity?.IsAuthenticated == true)
         {
             var subject = user.FindFirstValue("oid") ?? user.FindFirstValue("sub") ?? user.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(subject)) throw new ContractException("The caller has no stable identity.", 403);
-            return JsonSerializer.Serialize(new[] { "authenticated", user.FindFirstValue("tid") ?? "", user.FindFirstValue("iss") ?? "", subject, keyHash });
+            return JsonSerializer.Serialize(new[] { "authenticated", user.FindFirstValue("tid") ?? "", user.FindFirstValue("iss") ?? "", subject, binding });
         }
+        if (local) return binding;
         if (resolver is not IHeaderProviderCredentials)
             throw new ContractException("Protected references require authenticated callers or BYOK.", 403);
-        return "byok:" + keyHash;
+        return "byok:" + binding;
     }
 }

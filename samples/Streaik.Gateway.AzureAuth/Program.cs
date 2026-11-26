@@ -47,7 +47,7 @@ if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string
             ? new ToolApprovalSigner(secret, JsonSerializer.Serialize(new[] { subject.Issuer, subject.Value })) : null!;
     });
 }
-builder.Services.AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGladia().AddOpenRouter().AddFireworks()
+builder.Services.AddEcho().AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgram().AddGladia().AddOpenRouter().AddFireworks()
     .AddDeepSeek().AddGroq().AddTogether().AddCerebras().AddGoogle().AddXai().AddAssemblyAI()
     .AddCanopyWave().AddDaglo().AddVoyageAI().AddSluis().AddZyphra().AddZeroEntropy()
     .AddMoonshot().AddJina().AddBlackForestLabs().AddChutes().AddPinecone().AddRecraft()
