@@ -79,6 +79,7 @@ public sealed class ModelDirectoryTests
         Check("google/gemini-2.5-flash-native-audio-preview", "audio", "realtime");
         Check("google/gemini-embedding-001", "embedding");
         Check("xai/grok-voice-latest", "audio", "realtime");
+        Check("assemblyai/assemblyai-stt-3-7-realtime", "transcription", "realtime");
         Check("assemblyai/universal-streaming-english", "transcription", "realtime");
         Check("deepgram/nova-3", "transcription", "realtime");
         Check("deepgram/aura-2-asteria-en", "speech");

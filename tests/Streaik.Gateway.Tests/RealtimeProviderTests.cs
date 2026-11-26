@@ -9,6 +9,7 @@ public sealed class RealtimeProviderTests
     [InlineData("google/gemini-2.5-flash-native-audio-preview", "X-Google-Key", "generativelanguage.googleapis.com", "/v1alpha/auth_tokens", "x-goog-api-key", "fixture", "name", "Constrained")]
     [InlineData("xai/grok-voice-latest", "X-Xai-Key", "api.x.ai", "/v1/realtime/client_secrets", "Authorization", "Bearer fixture", "value", "grok-voice-latest")]
     [InlineData("assemblyai/universal-streaming-english", "X-AssemblyAI-Key", "streaming.assemblyai.com", "/v3/token?expires_in_seconds=60", "Authorization", "fixture", "token", "speech_model=universal-streaming-english")]
+    [InlineData("assemblyai/assemblyai-stt-3-7-realtime", "X-AssemblyAI-Key", "streaming.assemblyai.com", "/v3/token?expires_in_seconds=60", "Authorization", "fixture", "token", "speech_model=assemblyai-stt-3-7-realtime")]
     public async Task Temporary_tokens_use_provider_scoped_auth_and_return_no_store(string model, string header, string hostName,
         string path, string authHeader, string expectedAuth, string tokenField, string urlSuffix)
     {
@@ -26,6 +27,29 @@ public sealed class RealtimeProviderTests
         Assert.DoesNotContain("X-OpenAI-Key", upstream.Headers.Keys, StringComparer.OrdinalIgnoreCase);
         if (hostName.StartsWith("generativelanguage", StringComparison.Ordinal))
             Assert.Equal("models/" + model.Split('/')[1], (string?)upstream.Body!["bidiGenerateContentSetup"]!["model"]);
+    }
+
+    [Fact]
+    public async Task Deepgram_browser_lease_uses_the_scoped_grant_and_never_returns_the_api_key()
+    {
+        var token = "temporary";
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json(new JsonObject { ["access_token"] = token, ["expires_in"] = 30 }.ToJsonString()), media: true);
+        const string endpoint = "/api/realtime/token/deepgram/nova-3";
+        using var response = await host.PostAsync(endpoint, "{}", ("X-Deepgram-Key", "fixture-deepgram"), ("X-OpenAI-Key", "not-forwarded"));
+        var body = JsonNode.Parse(await GatewayTests.Success(response))!;
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Equal("temporary", (string?)body["token"]);
+        Assert.Equal("wss://api.deepgram.com/v1/listen?model=nova-3", (string?)body["url"]);
+        Assert.True((long?)body["expiresAt"] > DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var upstream = Assert.Single(host.Requests);
+        Assert.Equal("/v1/auth/grant", upstream.Path);
+        Assert.Equal("Token fixture-deepgram", upstream.Headers["Authorization"]);
+        Assert.DoesNotContain("X-OpenAI-Key", upstream.Headers.Keys, StringComparer.OrdinalIgnoreCase);
+
+        token = "fixture-deepgram";
+        using var echoedCredential = await host.PostAsync(endpoint, "{}", ("X-Deepgram-Key", token));
+        Assert.False(echoedCredential.IsSuccessStatusCode);
+        Assert.DoesNotContain(token, await echoedCredential.Content.ReadAsStringAsync());
     }
 
     [Theory]
