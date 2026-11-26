@@ -165,12 +165,15 @@ internal static partial class VercelAdapter
     // Never read or translate any submitted output on the denial path.
     private static (string Output, bool IsError) ClientToolResult(ToolInvocationPart tool)
     {
-        if (tool.Approval is { Approved: false } && tool.State is "approval-responded" or "output-denied")
+        const string required = "Client function calls require an approved result before continuing.";
+        if (tool.Approval is not { } approval || string.IsNullOrWhiteSpace(approval.Id))
+            throw new ContractException(required);
+        if (approval.Approved == false && tool.State is "approval-responded" or "output-denied")
             return ("The user declined to share this tool result.", true);
-        if (tool.Approval is not { Id.Length: > 0, Approved: true }
+        if (approval.Approved != true
             || tool.State is not ("output-available" or "output-error" or "approval-responded")
             || (tool.Output is null && tool.ErrorText is null))
-            throw new ContractException("Client function calls require an approved result before continuing.");
+            throw new ContractException(required);
         return (tool.ErrorText ?? ToolOutput(tool.Output), tool.State == "output-error");
     }
 

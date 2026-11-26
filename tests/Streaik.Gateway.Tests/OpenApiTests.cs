@@ -59,6 +59,16 @@ public sealed class OpenApiTests
         AssertPathParameters(Post("/api/realtime/token/{model}"), "model");
         AssertPathParameters(Post("/api/realtime/session/{model}"), "model");
 
+        var chat = ResolveSchema(root, RequestContent("/api/chat").GetProperty("application/json").GetProperty("schema"));
+        var chatProperties = chat.GetProperty("properties");
+        foreach (var removed in new[] { "temperature", "topP", "clientToolResultApproval" })
+            Assert.False(chatProperties.TryGetProperty(removed, out _));
+        var reasoning = chatProperties.GetProperty("reasoning");
+        Assert.Equal(new[] { "null", "string" }, reasoning.GetProperty("type").EnumerateArray().Select(value => value.GetString()).Order());
+        Assert.Equal(new[] { "low", "medium", "high", null }, reasoning.GetProperty("enum").EnumerateArray().Select(value => value.GetString()));
+        if (chat.TryGetProperty("required", out var required))
+            Assert.DoesNotContain(required.EnumerateArray(), property => property.GetString() == "reasoning");
+
         var responses = ResolveSchema(root, RequestContent("/v1/responses").GetProperty("application/json").GetProperty("schema"));
         var input = ResolveSchema(root, responses.GetProperty("properties").GetProperty("input"));
         var inputTypes = input.GetProperty("anyOf").EnumerateArray().Select(s => s.GetProperty("type").GetString()).ToArray();

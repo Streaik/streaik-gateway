@@ -104,7 +104,7 @@ public sealed class ChatRoutingTests
     {
         await using var host = await FixtureHost.StartAsync(FixtureHost.Reply, compatibleChat: true);
         var body = Body(Web, $"{provider}/{model}", true);
-        body["temperature"] = 0.9;
+        body["reasoning"] = "low";
         var options = JsonNode.Parse(fields)!.AsObject();
         options["temperature"] = 0.25;
         options["future_option"] = JsonNode.Parse("""{"values":[0,false,null,{"native_field":"unchanged"}]}""");
@@ -212,7 +212,7 @@ public sealed class ChatRoutingTests
     [Theory]
     [InlineData(Responses, """{"model":"deepseek/model","input":[{"role":"user","content":"lookup"},{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"id\":1}"},{"type":"function_call_output","call_id":"call_1","output":"found"}]}""")]
     [InlineData(Messages, """{"model":"deepseek/model","max_tokens":128,"messages":[{"role":"user","content":"lookup"},{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{"id":1}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"found"}]}]}""")]
-    [InlineData(Web, """{"model":"deepseek/model","messages":[{"id":"u","role":"user","parts":[{"type":"text","text":"lookup"}]},{"id":"a","role":"assistant","parts":[{"type":"dynamic-tool","toolName":"lookup","toolCallId":"call_1","state":"output-available","input":{"id":1},"output":"found"}]}]}""")]
+    [InlineData(Web, """{"model":"deepseek/model","messages":[{"id":"u","role":"user","parts":[{"type":"text","text":"lookup"}]},{"id":"a","role":"assistant","parts":[{"type":"dynamic-tool","toolName":"lookup","toolCallId":"call_1","state":"output-available","input":{"id":1},"output":"found","approval":{"id":"review_1","approved":true}}]}]}""")]
     public async Task Translated_history_replays_standard_tool_results(string route, string body)
     {
         await using var host = await FixtureHost.StartAsync(request => FixtureHost.Reply(request with { Path = Chat }), compatibleChat: true);

@@ -13,7 +13,6 @@ public sealed class VercelReplayTests
     public async Task Client_tool_options_namespaces_and_approval_survive_the_Responses_bridge()
     {
         var request = GatewayTests.Request(Route, "openai/test", true);
-        request["clientToolResultApproval"] = true;
         request["tools"] = JsonNode.Parse("""[{"name":"ordinary","inputSchema":{"type":"object"},"allowed_callers":["programmatic"],"defer_loading":true}]""");
         request["providerMetadata"] = JsonNode.Parse("""
             {"openai":{"tools":[{"type":"namespace","name":"inventory","description":"Inventory tools",
@@ -21,6 +20,7 @@ public sealed class VercelReplayTests
             """);
         var key = ("X-OpenAI-Key", "fixture-key");
         JsonNode metadata;
+        JsonNode approvalId;
         await using (var host = await FixtureHost.StartAsync(_ => EndResponse("""
             {"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","namespace":"inventory","arguments":"{}"}
             """)))
@@ -28,7 +28,9 @@ public sealed class VercelReplayTests
             using var response = await host.PostAsync(Route, request.ToJsonString(), key);
             var wire = await GatewayTests.Success(response);
             var input = GatewayTests.Part(wire, "tool-input-available");
-            Assert.Equal("call_1", (string?)GatewayTests.Part(wire, "tool-approval-request")["toolCallId"]);
+            var approval = GatewayTests.Part(wire, "tool-approval-request");
+            Assert.Equal("call_1", (string?)approval["toolCallId"]);
+            approvalId = approval["approvalId"]!.DeepClone();
             Assert.Equal("inventory", (string?)input["toolMetadata"]?["namespace"]);
             metadata = input["toolMetadata"]!.DeepClone();
             var tools = Assert.Single(host.Requests).Body!["tools"]!.AsArray();
@@ -41,6 +43,7 @@ public sealed class VercelReplayTests
             {"type":"dynamic-tool","toolName":"lookup","toolCallId":"call_1","state":"output-available","input":{},"output":{"ok":true}}
             """)!;
         invocation["toolMetadata"] = metadata;
+        invocation["approval"] = new JsonObject { ["id"] = approvalId, ["approved"] = true };
         request["messages"]!.AsArray().Add(new JsonObject { ["id"] = "reply", ["role"] = "assistant", ["parts"] = new JsonArray(invocation) });
         await using var replay = await FixtureHost.StartAsync();
         using var continuation = await replay.PostAsync(Route, request.ToJsonString(), key);
@@ -93,7 +96,6 @@ public sealed class VercelReplayTests
     {
         var key = ($"X-{provider}-Key", "fixture-key");
         var initial = GatewayTests.Request(Route, $"{provider}/test", true);
-        initial["clientToolResultApproval"] = true;
         initial["tools"] = JsonNode.Parse("""[{"name":"lookup"}]""");
         JsonNode providerPart;
         await using (var first = await FixtureHost.StartAsync(_ => ToolStream(provider)))
@@ -113,7 +115,7 @@ public sealed class VercelReplayTests
                 ["callProviderMetadata"] = input["providerMetadata"]!.DeepClone(), ["resultProviderMetadata"] = output["providerMetadata"]!.DeepClone() };
         }
         initial["messages"]!.AsArray().Add(new JsonObject { ["id"] = "assistant_2", ["role"] = "assistant", ["parts"] = new JsonArray(providerPart,
-            JsonNode.Parse("""{"type":"dynamic-tool","toolName":"lookup","toolCallId":"client_1","state":"output-available","input":{"n":5},"output":{"ok":true}}""")) });
+            JsonNode.Parse("""{"type":"dynamic-tool","toolName":"lookup","toolCallId":"client_1","state":"output-available","input":{"n":5},"output":{"ok":true},"approval":{"id":"review_1","approved":true}}""")) });
         initial["messages"]!.AsArray().Add(JsonNode.Parse("""{"id":"user_2","role":"user","parts":[{"type":"text","text":"next"}]}"""));
 
         await using var fresh = await FixtureHost.StartAsync();
@@ -210,6 +212,11 @@ public sealed class VercelReplayTests
             Assert.Contains("The user declined to share this tool result.", upstream);
         }
 
+        var decisionForReplay = reviewed["approval"]!.DeepClone();
+        reviewed.Remove("approval");
+        using var missing = await fresh.PostAsync(Route, request.ToJsonString(), key);
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+        reviewed["approval"] = decisionForReplay;
         if (signing)
         {
             reviewed["input"]!["n"] = 2;
@@ -219,8 +226,8 @@ public sealed class VercelReplayTests
             ((JsonObject)reviewed["approval"]!).Remove("signature");
             using var unsigned = await fresh.PostAsync(Route, request.ToJsonString(), key);
             Assert.Equal(HttpStatusCode.BadRequest, unsigned.StatusCode);
-            Assert.Single(fresh.Requests);
         }
+        Assert.Single(fresh.Requests);
     }
 
     [Fact]
@@ -238,7 +245,6 @@ public sealed class VercelReplayTests
     private static JsonObject ReviewRequest(string provider)
     {
         var request = GatewayTests.Request(Route, $"{provider}/test", true);
-        request["clientToolResultApproval"] = true;
         request["tools"] = JsonNode.Parse("""[{"name":"lookup","inputSchema":{"type":"object"}}]""");
         return request;
     }
