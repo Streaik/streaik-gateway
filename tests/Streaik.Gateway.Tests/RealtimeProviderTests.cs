@@ -36,7 +36,7 @@ public sealed class RealtimeProviderTests
             ? FixtureHost.Json("""{"value":"temporary-xai"}""")
             : FixtureHost.Json("""{"name":"auth_tokens/temporary-google"}"""), liveProviders: true);
         using var xai = await host.PostAsync("/api/realtime/token/xai/grok-voice-latest", """
-            {"sessionConfig":{"providerOptions":{"xai":{"expires_after":{"anchor":"created_at","seconds":60}}}}}
+            {"sessionConfig":{"providerOptions":{"xai":{"expires_after":{"seconds":60}}}}}
             """, ("X-Xai-Key", "fixture"));
         using var google = await host.PostAsync("/api/realtime/token/google/gemini-2.5-flash-native-audio-preview", """
             {"sessionConfig":{"providerOptions":{"google":{"bidiGenerateContentSetup":{"model":"models/gemini-2.5-flash-native-audio-preview",
@@ -48,7 +48,7 @@ public sealed class RealtimeProviderTests
         Assert.Contains("temporary-xai", await GatewayTests.Success(xai));
         Assert.Contains("auth_tokens/temporary-google", await GatewayTests.Success(google));
         var xaiRequest = Assert.Single(host.Requests, request => request.Host == "api.x.ai").Body!;
-        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"expires_after":{"anchor":"created_at","seconds":60}}"""), xaiRequest));
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"expires_after":{"seconds":60}}"""), xaiRequest));
         var googleRequest = Assert.Single(host.Requests, request => request.Host == "generativelanguage.googleapis.com").Body!;
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""
             {"model":"models/gemini-2.5-flash-native-audio-preview",
