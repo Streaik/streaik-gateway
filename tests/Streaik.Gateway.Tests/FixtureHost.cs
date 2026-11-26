@@ -56,7 +56,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool arkRouteBergetAstica = false, bool bastionTensorUnreal = false, bool aichixiaEdgeSpeakIsaacus = false,
         bool abliterationAIMagicxSpeechmatics = false, bool dandoloBinericAstria = false, bool asiOneRimeStabilityAI = false,
         bool avianFishAudioLumaAI = false, bool augureCognitivessAIHorde = false, bool tikHubAIWellSaidYollomi = false,
-        bool commonstackLeonardoNeuphonic = false)
+        bool commonstackLeonardoNeuphonic = false, bool baseApiByteSpaceCambai = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -95,6 +95,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (augureCognitivessAIHorde) builder.Services.AddAugure().AddCognitivessAI().AddAIHorde();
         if (tikHubAIWellSaidYollomi) builder.Services.AddTikHubAI().AddWellSaid().AddYollomi();
         if (commonstackLeonardoNeuphonic) builder.Services.AddCommonstack().AddLeonardo().AddNeuphonic();
+        if (baseApiByteSpaceCambai) builder.Services.AddBaseAPI().AddByteSpace().AddCAMBAI();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -129,6 +130,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (augureCognitivessAIHorde) ids.AddRange(["augure", "cognitivessai", "aihorde", "aihorde-images", "aihorde-assets"]);
         if (tikHubAIWellSaidYollomi) ids.AddRange(["tikhubai", "wellsaid", "yollomi", "yollomi-assets"]);
         if (commonstackLeonardoNeuphonic) ids.AddRange(["commonstack", "leonardo", "leonardo-assets", "neuphonic"]);
+        if (baseApiByteSpaceCambai) ids.AddRange(["baseapi", "bytespace", "cambai", "cambai-assets"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

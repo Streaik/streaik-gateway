@@ -79,7 +79,7 @@ public static partial class StreaikGateway
             buffer.Write(chunk, 0, length);
         }
         var metadata = (upstream as SpeechProviderResponse)?.ProviderMetadata;
-        var format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" or "bineric" or "stabilityai"
+        var format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" or "bineric" or "stabilityai" or "cambai"
             ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type);
         if (call.ProviderId is "rime" or "neuphonic" && metadata?.TryGetValue(call.ProviderId, out var native) == true
             && native.ValueKind == JsonValueKind.Object && native.TryGetProperty("audioFormat", out var nativeFormat)
@@ -118,7 +118,7 @@ public static partial class StreaikGateway
         await Part(new SpeechResponseMetadataPart { ModelId = call.Model, Timestamp = DateTime.UtcNow });
         await using var stream = await upstream.Content.ReadAsStreamAsync(call.Ct);
         var chunk = new byte[16384];
-        var format = call.ProviderId is "unrealspeech" or "bineric" ? AudioFormatName(type) : request.OutputFormat?.Type ?? AudioFormatName(type);
+        var format = call.ProviderId is "unrealspeech" or "bineric" or "cambai" ? AudioFormatName(type) : request.OutputFormat?.Type ?? AudioFormatName(type);
         while (await stream.ReadAsync(chunk, call.Ct) is > 0 and var length)
             await Part(new SpeechAudioPart { Audio = Convert.ToBase64String(chunk, 0, length), AudioFormat = new() { Type = format } });
         await Part(new SpeechFinishPart { ProviderMetadata = (upstream as SpeechProviderResponse)?.ProviderMetadata });
@@ -169,7 +169,7 @@ public static partial class StreaikGateway
         var format = form["response_format"].ToString();
         if (format is not ("" or "json" or "text" or "verbose_json")) throw new ContractException("Unsupported transcription response format.");
         var stream = form["stream"] == "true";
-        if (stream && call.ProviderId != "bineric") throw new ContractException("Use the streaming transcription route.");
+        if (stream && call.ProviderId is not ("bineric" or "cambai")) throw new ContractException("Use the streaming transcription route.");
         if (stream && format is not ("" or "json")) throw new ContractException("Streaming transcription requires JSON response format.");
         var options = form.Where(k => k.Key is not ("model" or "file" or "language" or "response_format" or "stream"))
             .ToDictionary(k => k.Key, k => JsonSerializer.SerializeToElement(k.Value.ToString()));

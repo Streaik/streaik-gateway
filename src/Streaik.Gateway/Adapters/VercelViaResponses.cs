@@ -27,12 +27,16 @@ internal static partial class VercelAdapter
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var protectedContainers = GatewayContainerArtifacts.Enabled(call);
         string? containerToken = null, containerId = null;
-        foreach (var message in request.Messages)
+        // CAMBAI translates the last user turn rather than sending conversation history to the translation API.
+        var translation = call.ProviderId == "cambai";
+        var messages = translation ? request.Messages.Where(message => message.Role == Role.user).TakeLast(1) : request.Messages;
+        foreach (var message in messages)
         {
             var results = new List<ResponseFunctionCallOutputItem>();
             var userParts = new List<ResponseContentPart>();
             foreach (var part in message.Parts)
             {
+                if (translation && part is not TextUIPart) continue;
                 switch (part)
                 {
                     case TextUIPart text when message.Role == Role.user:
