@@ -19,9 +19,10 @@ internal static partial class GatewayModelMetadata
             else if (tag is "agent" or "voice" or "translate") tags.Add(tag);
         }
 
-        if (IsRealtime(type) || IsKnownLiveModel(provider, name)) tags.Add("realtime");
+        var openAiVoice = provider == "openai" && (OpenAiRealtime().IsMatch(name) || OpenAiLive().IsMatch(name));
+        if (IsRealtime(type) || openAiVoice || IsKnownLiveModel(provider, name)) tags.Add("realtime");
         model.Tags = tags.Count > 0 ? tags.ToArray() : null;
-        model.Type = type switch
+        model.Type = openAiVoice ? (IsTranscription(name) ? "transcription" : "audio") : type switch
         {
             null or "" or "model" => Infer(provider, name, tags.Contains("realtime")),
             "chat" or "text" or "llm" => "language",
@@ -38,7 +39,6 @@ internal static partial class GatewayModelMetadata
 
     private static bool IsKnownLiveModel(string provider, string name) => provider switch
     {
-        "openai" => OpenAiLive().IsMatch(name) || OpenAiLiveTranscription().IsMatch(name),
         "google" => name.StartsWith("gemini-", StringComparison.Ordinal) &&
             (name.Contains("-live", StringComparison.Ordinal) || name.Contains("-native-audio", StringComparison.Ordinal)),
         "xai" => name == "grok-voice-latest",
@@ -47,7 +47,7 @@ internal static partial class GatewayModelMetadata
 
     private static string Infer(string provider, string name, bool realtime)
     {
-        if (Transcription().IsMatch(name) || (name.StartsWith("voxtral", StringComparison.Ordinal) && !Speech().IsMatch(name))) return "transcription";
+        if (IsTranscription(name) || (name.StartsWith("voxtral", StringComparison.Ordinal) && !Speech().IsMatch(name))) return "transcription";
         if (Speech().IsMatch(name)) return "speech";
         if (Reranking().IsMatch(name)) return "reranking";
         if (Embedding().IsMatch(name)) return "embedding";
@@ -65,10 +65,12 @@ internal static partial class GatewayModelMetadata
         return provider is "arkroute" or "cencori" or "cerebras" or "chutes" or "cloudrift" or "crusoe" or "deepseek" or "groq" or "huggingface" or "nebius" or "tensorblock" ? "language" : "other";
     }
 
+    private static bool IsTranscription(string name) => Transcription().IsMatch(name);
+
     [GeneratedRegex("^gpt-(?:4o-)?realtime(?:-|$)")]
+    private static partial Regex OpenAiRealtime();
+    [GeneratedRegex("^gpt-live(?:-|$)")]
     private static partial Regex OpenAiLive();
-    [GeneratedRegex("^gpt-live-transcribe(?:-\\d{4}-\\d{2}-\\d{2})?$")]
-    private static partial Regex OpenAiLiveTranscription();
     [GeneratedRegex("^(?:gpt-(?:3\\.5|4o|[4-9](?:\\.\\d+)?)|o[1-9])(?:-|$)")]
     private static partial Regex OpenAiLanguage();
     [GeneratedRegex("(?:^|[-_.])(?:search|vision)(?:[-_.]|$)")]
