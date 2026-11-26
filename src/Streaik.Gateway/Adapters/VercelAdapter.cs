@@ -85,6 +85,8 @@ internal static partial class VercelAdapter
             if (entry.ValueKind != JsonValueKind.Object) continue;
             var type = entry.TryGetProperty("type", out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
             if (responses ? type is "function" or "namespace" : type is null or "custom") return true;
+            if (responses && type == "tool_search" && entry.TryGetProperty("execution", out var mode)
+                && mode.ValueKind == JsonValueKind.String && mode.ValueEquals("client")) return true;
         }
         return false;
     }

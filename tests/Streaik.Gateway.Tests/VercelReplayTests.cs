@@ -9,6 +9,100 @@ public sealed class VercelReplayTests
 {
     private const string Route = "/api/chat";
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Hosted_tool_search_is_visible_and_replays_a_paired_native_call_and_output(bool itemEvents)
+    {
+        const string searchCall = """{"type":"tool_search_call","id":"tsc_1","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["inventory"]}}""";
+        const string searchOutput = """{"type":"tool_search_output","id":"tso_1","execution":"server","call_id":null,"status":"completed","tools":[{"type":"function","name":"lookup","defer_loading":true,"parameters":{"type":"object"}}]}""";
+        var key = ("X-OpenAI-Key", "fixture-key");
+        var request = GatewayTests.Request(Route, "openai/test", true);
+        request["tools"] = JsonNode.Parse("""[{"name":"lookup","defer_loading":true,"inputSchema":{"type":"object"}}]""");
+        request["providerMetadata"] = JsonNode.Parse("""{"openai":{"tools":[{"type":"tool_search","execution":"server"}]}}""");
+        JsonObject saved;
+        await using (var first = await FixtureHost.StartAsync(_ => itemEvents ? FixtureHost.Sse(
+            $$"""{"type":"response.output_item.done","output_index":0,"item":{{searchCall}}}""",
+            $$"""{"type":"response.output_item.done","output_index":1,"item":{{searchOutput}}}""",
+            $$$"""{"type":"response.completed","response":{"id":"resp_search","model":"native","status":"completed","output":[{{{searchCall}}},{{{searchOutput}}}]}}""")
+            : EndResponse($"{searchCall},{searchOutput}")))
+        {
+            using var response = await first.PostAsync(Route, request.ToJsonString(), key);
+            var wire = await GatewayTests.Success(response);
+            var input = GatewayTests.Part(wire, "tool-input-available");
+            var output = GatewayTests.Part(wire, "tool-output-available");
+            Assert.Equal("tool_search", (string?)input["toolName"]);
+            Assert.Equal("tsc_1", (string?)input["toolCallId"]);
+            Assert.Equal("tsc_1", (string?)output["toolCallId"]);
+            Assert.True((bool?)input["providerExecuted"]);
+            Assert.True((bool?)output["providerExecuted"]);
+            Assert.DoesNotContain("tool-approval-request", wire);
+            saved = new JsonObject { ["type"] = "dynamic-tool", ["toolName"] = "tool_search", ["toolCallId"] = "tsc_1",
+                ["providerExecuted"] = true, ["state"] = "output-available", ["input"] = input["input"]!.DeepClone(),
+                ["output"] = output["output"]!.DeepClone(), ["callProviderMetadata"] = input["providerMetadata"]!.DeepClone(),
+                ["resultProviderMetadata"] = output["providerMetadata"]!.DeepClone() };
+            var tools = Assert.Single(first.Requests).Body!["tools"]!.AsArray();
+            Assert.Contains(tools, tool => (string?)tool?["type"] == "tool_search" && (string?)tool?["execution"] == "server");
+            Assert.Contains(tools, tool => (string?)tool?["name"] == "lookup" && (bool?)tool?["defer_loading"] == true);
+        }
+
+        request["messages"]!.AsArray().Add(new JsonObject { ["id"] = "searched", ["role"] = "assistant", ["parts"] = new JsonArray(saved, saved.DeepClone()) });
+        request["messages"]!.AsArray().Add(JsonNode.Parse("""{"id":"next","role":"user","parts":[{"type":"text","text":"Continue"}]}"""));
+        await using var fresh = await FixtureHost.StartAsync();
+        using var continuation = await fresh.PostAsync(Route, request.ToJsonString(), key);
+        await GatewayTests.Success(continuation);
+        var upstream = Assert.Single(fresh.Requests).Body!;
+        Assert.False((bool?)upstream["store"]);
+        Assert.Null(upstream["previous_response_id"]);
+        var history = upstream["input"]!.AsArray();
+        Assert.Equal(new[] { "message", "tool_search_call", "tool_search_output", "message" }, history.Select(item => (string?)item?["type"]));
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(searchCall), history[1]));
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(searchOutput), history[2]));
+    }
+
+    [Fact]
+    public async Task Approved_client_tool_search_replays_as_native_items_and_uses_the_request_catalog()
+    {
+        const string item = """{"type":"tool_search_call","id":"tsc_client","execution":"client","call_id":"call_search","status":"completed","arguments":{"goal":"stock"}}""";
+        var key = ("X-OpenAI-Key", "fixture-key");
+        var request = GatewayTests.Request(Route, "openai/test", true);
+        request["tools"] = JsonNode.Parse("""[{"name":"lookup","defer_loading":true,"inputSchema":{"type":"object"}},{"name":"eager"}]""");
+        request["providerMetadata"] = JsonNode.Parse("""{"openai":{"tools":[{"type":"tool_search","execution":"client","description":"Search","parameters":{"type":"object"}}]}}""");
+        JsonObject invocation;
+        await using (var host = await FixtureHost.StartAsync(_ => EndResponse(item)))
+        {
+            using var response = await host.PostAsync(Route, request.ToJsonString(), key);
+            var wire = await GatewayTests.Success(response);
+            var input = GatewayTests.Part(wire, "tool-input-available");
+            var approval = GatewayTests.Part(wire, "tool-approval-request");
+            Assert.Equal("call_search", (string?)input["toolCallId"]);
+            Assert.Equal("call_search", (string?)approval["toolCallId"]);
+            Assert.False((bool?)input["providerExecuted"]);
+            var tools = Assert.Single(host.Requests).Body!["tools"]!.AsArray();
+            Assert.DoesNotContain(tools, tool => (string?)tool?["name"] == "lookup");
+            Assert.Contains(tools, tool => (string?)tool?["name"] == "eager");
+            invocation = new JsonObject { ["type"] = "dynamic-tool", ["toolName"] = "tool_search", ["toolCallId"] = "call_search",
+                ["state"] = "output-available", ["input"] = input["input"]!.DeepClone(), ["callProviderMetadata"] = input["providerMetadata"]!.DeepClone(),
+                ["approval"] = new JsonObject { ["id"] = approval["approvalId"]!.DeepClone(), ["approved"] = true },
+                ["output"] = JsonNode.Parse("""{"tools":[{"name":"lookup","parameters":{"untrusted":true}},{"name":"eager"},{"name":"unknown"}]}""") };
+        }
+
+        request["messages"]!.AsArray().Add(new JsonObject { ["id"] = "searched", ["role"] = "assistant", ["parts"] = new JsonArray(invocation) });
+        await using var fresh = await FixtureHost.StartAsync();
+        using var continuation = await fresh.PostAsync(Route, request.ToJsonString(), key);
+        await GatewayTests.Success(continuation);
+        var history = Assert.Single(fresh.Requests).Body!["input"]!.AsArray();
+        Assert.Equal(new[] { "message", "tool_search_call", "tool_search_output" }, history.Select(entry => (string?)entry?["type"]));
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(item), history[1]));
+        var result = history[2]!.AsObject();
+        Assert.False(result.ContainsKey("id"));
+        Assert.Equal("call_search", (string?)result["call_id"]);
+        var loaded = Assert.Single(result["tools"]!.AsArray());
+        Assert.Equal("lookup", (string?)loaded?["name"]);
+        Assert.Equal("object", (string?)loaded?["parameters"]?["type"]);
+        Assert.Null(loaded?["parameters"]?["untrusted"]);
+    }
+
     [Fact]
     public async Task Client_tool_options_namespaces_and_approval_survive_the_Responses_bridge()
     {
