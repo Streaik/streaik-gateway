@@ -320,8 +320,8 @@ public sealed class GoogleInteractionsTests
     private static void AssertEstimate(JsonNode? metrics)
     {
         Assert.Equal(Cost, (decimal?)metrics?["cost"]);
-        Assert.Equal("USD", (string?)metrics?["currency"]);
-        Assert.True((bool?)metrics?["estimated"]);
+        Assert.False(metrics!.AsObject().ContainsKey("currency"));
+        Assert.False(metrics.AsObject().ContainsKey("estimated"));
     }
 
     private static void AssertInteraction(FixtureHost.UpstreamRequest request, bool stream)

@@ -11,7 +11,7 @@ using Streaik.Responses;
 
 namespace Streaik.Gateway;
 
-internal readonly record struct GatewayPrice(decimal Amount, bool Estimated = false);
+internal readonly record struct GatewayPrice(decimal Amount);
 
 internal static class GatewayPricing
 {
@@ -77,7 +77,7 @@ internal static class GatewayPricing
         }
         if (rates is null || (read > 0 && rates.InputCacheRead is null) || (write > 0 && rates.InputCacheWrite is null)) return null;
         return new GatewayPrice(uncached * rates.Input + output * rates.Output
-            + read * (rates.InputCacheRead ?? 0) + write * (rates.InputCacheWrite ?? 0), Estimated: true);
+            + read * (rates.InputCacheRead ?? 0) + write * (rates.InputCacheWrite ?? 0));
     }
 
     public static GatewayPrice? Reported(string provider, object? usage)
@@ -97,7 +97,7 @@ internal static class GatewayPricing
     public static GatewayPrice? Cost(Dictionary<string, JsonElement>? metadata)
         => metadata?.TryGetValue("gateway", out var gateway) == true && gateway.ValueKind == JsonValueKind.Object
            && gateway.TryGetProperty("cost", out var cost) && Amount(cost) is { } amount
-           ? new GatewayPrice(amount, gateway.TryGetProperty("estimated", out var estimated) && estimated.ValueKind == JsonValueKind.True) : null;
+           ? new GatewayPrice(amount) : null;
 
     public static GatewayPrice? Cost(ResponseResult response)
         => Cost(response.Metadata?.ToDictionary(x => x.Key, x => JsonSerializer.SerializeToElement(x.Value, Json)));
@@ -123,11 +123,6 @@ internal static class GatewayPricing
             ? prior.ValueKind == JsonValueKind.Object ? JsonObject.Create(prior) : null : new JsonObject();
         if (gateway is null || (gateway.TryGetPropertyValue("cost", out var existing) && Amount(JsonSerializer.SerializeToElement(existing)) is not null)) return metadata;
         gateway["cost"] = cost.Value.Amount;
-        if (cost.Value.Estimated)
-        {
-            gateway["currency"] = "USD";
-            gateway["estimated"] = true;
-        }
 
         (metadata ??= [])["gateway"] = JsonSerializer.SerializeToElement(gateway);
         return metadata;

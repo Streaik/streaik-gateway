@@ -28,7 +28,6 @@ public sealed class StreamMetricsTests
         Assert.True((bool)metadata["extra"]!);
         Assert.Equal("keep", (string?)metadata["gateway"]!["upstream"]);
         Check(metadata["gateway"]!, 0m);
-        Assert.Null(metadata["gateway"]!["estimated"]);
     }
 
     [Theory]
@@ -49,8 +48,6 @@ public sealed class StreamMetricsTests
         var gateway = Frames(await GatewayTests.Success(response)).Select(frame => (frame["response"] ?? frame)["metadata"]?["gateway"]
             ?? frame["messageMetadata"]?["providerMetadata"]?["gateway"]).Last(candidate => candidate?["cost"] is not null)!;
         Check(gateway, 0.00000195m);
-        Assert.Equal("USD", gateway["currency"]?.GetValue<string>());
-        Assert.True(gateway["estimated"]?.GetValue<bool>());
     }
 
     [Theory]
@@ -102,6 +99,8 @@ public sealed class StreamMetricsTests
         Assert.Equal(2d, (double)gateway["ttft"]!);
         Assert.Equal(3d, (double)gateway["tps"]!);
         Assert.Equal(cost, (decimal)gateway["cost"]!);
+        Assert.False(gateway.AsObject().ContainsKey("currency"));
+        Assert.False(gateway.AsObject().ContainsKey("estimated"));
     }
 
     private static void Clock(IServiceCollection services) => services.AddSingleton<TimeProvider, StepClock>();

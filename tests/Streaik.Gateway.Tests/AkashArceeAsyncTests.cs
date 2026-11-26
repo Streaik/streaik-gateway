@@ -65,7 +65,14 @@ public sealed class AkashArceeAsyncTests
         Assert.Contains(stream ? "native_delta" : "native_message", payload);
         Assert.Contains($"{provider}/vendor/chat", payload);
         if (stream) Assert.Contains("[DONE]", payload);
-        if (provider == "arceeai") Assert.Contains("estimated", payload);
+        if (provider == "arceeai")
+        {
+            var json = stream ? payload.Split('\n').Last(line => line.StartsWith("data: {", StringComparison.Ordinal))[6..] : payload;
+            var pricing = JsonNode.Parse(json)!["metadata"]!["gateway"]!.AsObject();
+            Assert.Equal(0.000007m, (decimal)pricing["cost"]!);
+            Assert.False(pricing.ContainsKey("currency"));
+            Assert.False(pricing.ContainsKey("estimated"));
+        }
         var chat = Assert.Single(host.Requests, request => request.Path.EndsWith("/chat/completions", StringComparison.Ordinal));
         Assert.Equal(provider == "akashml" ? "/v1/chat/completions" : "/api/v1/chat/completions", chat.Path);
         Assert.Equal("vendor/chat", (string?)chat.Body!["model"]);
