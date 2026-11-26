@@ -7,14 +7,20 @@ namespace Streaik.Gateway;
 
 internal static partial class VercelAdapter
 {
+    private const string ClientToolSearch = "client_tool_search";
+    private const string AnthropicToolSearchBeta = "advanced-tool-use-2025-11-20";
+
     private static MessagesRequest MessagesRequestFrom(GatewayCall call, ChatRequest request, bool viaChat = false)
     {
         if (request.ResponseFormat is not null || request.Verbosity is not null || request.MaxToolCalls is not null)
             throw new ContractException("This Vercel option has no Messages translation.");
         var history = new MessagesHistory();
+        var deferred = !viaChat && call.ProviderId == "anthropic" && request.Tools?.Any(tool => tool.Name == ClientToolSearch) == true
+            ? request.Tools.Where(tool => tool.DeferLoading == true && tool.Name != ClientToolSearch).Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal)
+            : [];
         foreach (var message in request.Messages)
         {
-            var results = new List<(string Id, string Output, bool IsError)>();
+            var results = new List<(string Id, MessagesContent Output, bool IsError)>();
             foreach (var part in message.Parts)
                 switch (part)
                 {
@@ -37,8 +43,10 @@ internal static partial class VercelAdapter
                         break;
                     case ToolInvocationPart tool when message.Role == Role.assistant:
                         var (output, isError) = ClientToolResult(tool);
-                        history.Tool(tool.ToolCallId, ToolName(tool), ToolInput(tool.Input));
-                        results.Add((tool.ToolCallId, output, isError));
+                        var name = ToolName(tool);
+                        history.Tool(tool.ToolCallId, name, ToolInput(tool.Input));
+                        var references = name == ClientToolSearch && !isError && deferred.Count > 0 ? ToolSearchReferences(output, deferred) : null;
+                        results.Add((tool.ToolCallId, references ?? new MessagesContent(output), isError));
                         break;
                     case StepStartUIPart or StartStepUIPart or SourceUIPart or SourceDocumentPart or MessageMetadataUIPart: break;
                     default: throw new ContractException($"Vercel part '{part.Type}' has no Messages translation.");
@@ -48,13 +56,15 @@ internal static partial class VercelAdapter
         var nativeRequest = history.Build(call.NativeModel, request.MaxOutputTokens, temperature: null, topP: null, stream: true);
         var tools = (request.Tools ?? []).DistinctBy(tool => tool.Name).Select(tool => new MessageToolDefinition
         { Name = tool.Name, Description = tool.Description, InputSchema = ToolInput(tool.InputSchema ?? new ToolSchema { Type = "object" }),
-            DeferLoading = tool.DeferLoading, AllowedCallers = tool.AllowedCallers?.ToList() }).ToList();
+            DeferLoading = call.ProviderId == "anthropic" && tool.Name == ClientToolSearch ? null : tool.DeferLoading,
+            AllowedCallers = tool.AllowedCallers?.ToList() }).ToList();
         if (!viaChat && Option(request, call.ProviderId, "tools") is { ValueKind: JsonValueKind.Array } nativeTools)
             tools.AddRange(nativeTools.Deserialize<List<MessageToolDefinition>>(MessagesJson.Default) ?? []);
-        if (request.ToolChoice != "none" && tools.Count != 0) nativeRequest.Tools = tools;
+        if ((request.ToolChoice != "none" || deferred.Count > 0) && tools.Count != 0) nativeRequest.Tools = tools;
         if (nativeRequest.Tools is not null && request.ToolChoice is { } choice)
             nativeRequest.ToolChoice = choice switch
             { "auto" => new MessageToolChoice(), "required" => new MessageToolChoice { Type = "any" },
+                "none" => new MessageToolChoice { Type = "none" },
                 _ => new MessageToolChoice { Type = "tool", Name = choice } };
         if (!viaChat)
         {
@@ -72,6 +82,42 @@ internal static partial class VercelAdapter
             }
         }
         return nativeRequest;
+    }
+
+    private static MessagesContent? ToolSearchReferences(string output, HashSet<string> deferred)
+    {
+        try
+        {
+            using var json = JsonDocument.Parse(output);
+            var root = json.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || root.TryGetProperty("isError", out var failed) && failed.ValueKind == JsonValueKind.True
+                || !root.TryGetProperty("structuredContent", out var content) || content.ValueKind != JsonValueKind.Object
+                || !content.TryGetProperty("selectedTools", out var tools) || tools.ValueKind != JsonValueKind.Array) return null;
+
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            var references = new List<MessageContentBlock>();
+            foreach (var tool in tools.EnumerateArray())
+            {
+                if (tool.ValueKind == JsonValueKind.Object && tool.TryGetProperty("name", out var name)
+                    && name.ValueKind == JsonValueKind.String && name.GetString() is { } value && deferred.Contains(value) && names.Add(value))
+                    references.Add(new MessageContentBlock { Type = "tool_reference", ToolName = value });
+                if (references.Count == 10) break;
+            }
+            return references.Count > 0 ? new MessagesContent(references) : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    private static IReadOnlyDictionary<string, string> MessagesHeaders(GatewayCall call, MessagesRequest request)
+    {
+        if (call.ProviderId != "anthropic" || request.Tools?.Any(tool => tool.Name == ClientToolSearch) != true
+            || !request.Tools.Any(tool => tool.DeferLoading == true)) return call.Headers;
+        const string header = "anthropic-beta";
+        var existing = call.Headers.GetValueOrDefault(header);
+        if (existing?.Split(',', StringSplitOptions.TrimEntries).Contains(AnthropicToolSearchBeta) == true) return call.Headers;
+        return new Dictionary<string, string>(call.Headers, StringComparer.OrdinalIgnoreCase)
+        { [header] = string.IsNullOrWhiteSpace(existing) ? AnthropicToolSearchBeta : $"{existing},{AnthropicToolSearchBeta}" };
     }
 
     private static async IAsyncEnumerable<UIMessagePart> MessageParts(GatewayCall call, IAsyncEnumerable<MessageStreamPart> source)

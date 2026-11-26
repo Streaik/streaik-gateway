@@ -46,7 +46,10 @@ internal static partial class VercelAdapter
                 native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true);
         }
         else if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
-            stream = MessageParts(call, messages.StreamMessageAsync(MessagesRequestFrom(call, request), call.Headers, call.Ct));
+        {
+            var native = MessagesRequestFrom(call, request);
+            stream = MessageParts(call, messages.StreamMessageAsync(native, MessagesHeaders(call, native), call.Ct));
+        }
         else if (call.GetChatBridge() is { } chat)
         {
             var nativeOptions = call.Get<INativeChatOptionsProvider>() is not null;

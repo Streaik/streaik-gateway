@@ -60,6 +60,7 @@ builder.Services.AddEcho().AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgr
     .AddDandolo().AddBineric().AddAstria()
     .AddASIOne().AddRime().AddStabilityAI()
     .AddAvian().AddFishAudio().AddLumaAI()
+    .AddAugure().AddCognitivessAI().AddAIHorde()
     .AddStreaikHeaderAuth().AddStreaikReferences();
 if (builder.Configuration.GetValue<bool>("Providers:edgespeak:Enabled")) builder.Services.AddEdgeSpeak();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))

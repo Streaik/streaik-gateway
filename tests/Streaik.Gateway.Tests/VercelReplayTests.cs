@@ -333,6 +333,49 @@ public sealed class VercelReplayTests
         Assert.Empty(host.Requests);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Anthropic_client_tool_search_replays_only_approved_deferred_references(bool approved)
+    {
+        const string secret = "integration-test-only-search-review-secret";
+        var key = ("X-Anthropic-Key", "fixture-key");
+        var request = GatewayTests.Request(Route, "anthropic/test", true);
+        request["tools"] = JsonNode.Parse("""[{"name":"client_tool_search"},{"name":"lookup","defer_loading":true},{"name":"eager"}]""");
+        JsonNode reviewed;
+        await using (var first = await FixtureHost.StartAsync(_ => FixtureHost.Sse(FixtureHost.MessageStart,
+            """{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_search","name":"client_tool_search","input":{}}}""",
+            """{"type":"content_block_stop","index":0}""", FixtureHost.MessageDelta, FixtureHost.MessageStop), Signing(true, secret)))
+        {
+            using var response = await first.PostAsync(Route, request.ToJsonString(), key);
+            var stream = await GatewayTests.Success(response);
+            var input = GatewayTests.Part(stream, "tool-input-available");
+            var review = GatewayTests.Part(stream, "tool-approval-request");
+            Assert.Equal("client_tool_search", (string?)input["toolName"]);
+            Assert.Equal("toolu_search", (string?)review["toolCallId"]);
+            var sent = Assert.Single(first.Requests);
+            Assert.Equal("advanced-tool-use-2025-11-20", sent.Headers["anthropic-beta"]);
+            Assert.Null(sent.Body!["tools"]![0]!["defer_loading"]);
+            Assert.True((bool?)sent.Body["tools"]![1]!["defer_loading"]);
+            reviewed = new JsonObject { ["type"] = "dynamic-tool", ["toolName"] = "client_tool_search", ["toolCallId"] = "toolu_search",
+                ["state"] = approved ? "output-available" : "approval-responded", ["providerExecuted"] = false, ["input"] = input["input"]!.DeepClone(),
+                ["approval"] = new JsonObject { ["id"] = review["approvalId"]!.DeepClone(), ["approved"] = approved,
+                    ["signature"] = review["signature"]!.DeepClone() },
+                ["output"] = JsonNode.Parse("""{"structuredContent":{"selectedTools":[{"name":"lookup"},{"name":"lookup"},{"name":"eager"},{"name":"unknown"}]},"content":[]}""") };
+        }
+        request["messages"]!.AsArray().Add(new JsonObject { ["role"] = "assistant", ["id"] = "replay", ["parts"] = new JsonArray(reviewed) });
+        request["messages"]!.AsArray().Add(JsonNode.Parse("""{"id":"follow-up","role":"user","parts":[{"type":"text","text":"Continue"}]}"""));
+        await using var fresh = await FixtureHost.StartAsync(configure: Signing(true, secret));
+        using var replay = await fresh.PostAsync(Route, request.ToJsonString(), key);
+        await GatewayTests.Success(replay);
+        var blocks = Assert.Single(fresh.Requests).Body!["messages"]!.AsArray().SelectMany(m => m!["content"]!.AsArray());
+        var result = Assert.Single(blocks, part => (string?)part?["type"] == "tool_result");
+        Assert.Equal("toolu_search", (string?)result?["tool_use_id"]);
+        if (approved)
+            Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""[{"type":"tool_reference","tool_name":"lookup"}]"""), result?["content"]));
+        else Assert.Contains("declined", (string?)result?["content"]);
+    }
+
     private static Action<IServiceCollection>? Signing(bool enabled, string secret)
         => enabled ? services => services.AddSingleton(new ToolApprovalSigner(secret)) : null;
 

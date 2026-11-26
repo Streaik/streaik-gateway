@@ -28,7 +28,10 @@ internal sealed class MessagesHistory
         => Add("assistant", new MessageContentBlock { Type = "tool_use", Id = id, Name = name, Input = input });
 
     public void Result(string id, string text, bool? isError = null)
-        => Add("user", new MessageContentBlock { Type = "tool_result", ToolUseId = id, Content = new MessagesContent(text), IsError = isError });
+        => Result(id, new MessagesContent(text), isError);
+
+    public void Result(string id, MessagesContent content, bool? isError = null)
+        => Add("user", new MessageContentBlock { Type = "tool_result", ToolUseId = id, Content = content, IsError = isError });
 
     public MessagesRequest Build(string model, int? limit, double? temperature, double? topP, bool? stream)
     {

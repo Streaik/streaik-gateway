@@ -55,7 +55,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool crusoeAtlasCloudDeepdub = false, bool doublewordBananaPeelCreora = false, bool akumiClarifaiBespokeLabs = false,
         bool arkRouteBergetAstica = false, bool bastionTensorUnreal = false, bool aichixiaEdgeSpeakIsaacus = false,
         bool abliterationAIMagicxSpeechmatics = false, bool dandoloBinericAstria = false, bool asiOneRimeStabilityAI = false,
-        bool avianFishAudioLumaAI = false)
+        bool avianFishAudioLumaAI = false, bool augureCognitivessAIHorde = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -91,6 +91,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (dandoloBinericAstria) builder.Services.AddDandolo().AddBineric().AddAstria();
         if (asiOneRimeStabilityAI) builder.Services.AddASIOne().AddRime().AddStabilityAI();
         if (avianFishAudioLumaAI) builder.Services.AddAvian().AddFishAudio().AddLumaAI();
+        if (augureCognitivessAIHorde) builder.Services.AddAugure().AddCognitivessAI().AddAIHorde();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -122,6 +123,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (dandoloBinericAstria) ids.AddRange(["dandolo", "bineric", "astria", "astria-delivery"]);
         if (asiOneRimeStabilityAI) ids.AddRange(["asione", "rime", "stabilityai"]);
         if (avianFishAudioLumaAI) ids.AddRange(["avian", "fishaudio", "lumaai", "lumaai-delivery"]);
+        if (augureCognitivessAIHorde) ids.AddRange(["augure", "cognitivessai", "aihorde", "aihorde-images", "aihorde-assets"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));
