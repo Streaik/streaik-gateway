@@ -63,7 +63,7 @@ public static partial class StreaikGateway
         var request = await ReadAsync<SpeechRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
         var options = SpeechOptions(call, request.ProviderOptions);
-        if (request.Language is { } language && (call.Get<IStreamingSpeechEventsProvider>() is not null
+        if (request.Language is { } language && (call.ProviderId == "deapi" || call.Get<IStreamingSpeechEventsProvider>() is not null
                 || call.Get<IChatAudioRoutingProvider>()?.IsSpeechModel(call.NativeModel) == true))
             (options ??= new())["language"] = JsonSerializer.SerializeToElement(language, Web);
         using var upstream = await SpeakAsync(call, new() { Model = call.NativeModel, Input = request.Text,
@@ -193,13 +193,18 @@ public static partial class StreaikGateway
     {
         var request = await ReadAsync<TranscriptionRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
-        if (request.Audio is not JsonElement { ValueKind: JsonValueKind.String } input) throw new ContractException("'audio' must be a base64 string.");
-        var (bytes, mediaType) = ReadAudio(input.GetString(), request.MediaType);
-        using var audio = new MemoryStream(bytes, writable: false);
         var options = SelectedOptions(call, request.ProviderOptions, "model", "file");
+        if (request.Audio is not JsonElement { ValueKind: JsonValueKind.String } input) throw new ContractException("'audio' must be a base64 string.");
+        var value = input.GetString();
+        var useSourceUrl = call.ProviderId == "deapi" && (options?.ContainsKey("source_url") == true
+            || Uri.TryCreate(value, UriKind.Absolute, out var url) && url.Scheme is "https" or "http");
+        if (useSourceUrl) (options ??= new()).TryAdd("source_url", input);
+        var (bytes, mediaType) = useSourceUrl ? (System.Array.Empty<byte>(), "audio/wav")
+            : ReadAudio(value, request.MediaType, allowVideo: call.ProviderId == "deapi");
+        using var audio = new MemoryStream(bytes, writable: false);
         var language = options?.TryGetValue("language", out var lang) == true && lang.ValueKind == JsonValueKind.String ? lang.GetString() : null;
         var result = await call.Require<ITranscriptionProvider>().TranscribeAsync(call.NativeModel, audio, mediaType,
-            $"audio.{(mediaType == "audio/mpeg" ? "mp3" : mediaType.Split('/')[1])}", language, options, call.Headers, call.Ct);
+            $"audio.{(mediaType == "audio/mpeg" ? "mp3" : mediaType.Split('/').Last())}", language, options, call.Headers, call.Ct);
         result.Response ??= new();
         result.Response.ModelId = call.Model;
         result.Response.Timestamp = DateTime.UtcNow;
@@ -223,7 +228,7 @@ public static partial class StreaikGateway
         }
     }
 
-    private static (byte[] Bytes, string MediaType) ReadAudio(string? input, string? mediaType)
+    private static (byte[] Bytes, string MediaType) ReadAudio(string? input, string? mediaType, bool allowVideo = false)
     {
         Need(input, "audio");
         var encoded = input!;
@@ -235,8 +240,10 @@ public static partial class StreaikGateway
             encoded = encoded[(comma + 1)..];
         }
         if (encoded.Length > MaxMediaBytes * 4 / 3 + 8) throw new ContractException("Audio is too large.", 413);
-        if (mediaType is null || !mediaType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) || !mediaType.Skip(6).All(ch => char.IsAsciiLetterOrDigit(ch) || ch is '.' or '-' or '+'))
-            throw new ContractException("An audio MIME type is required.");
+        if (mediaType is not { Length: > 6 } || !(mediaType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)
+                || allowVideo && mediaType.StartsWith("video/", StringComparison.OrdinalIgnoreCase))
+            || !mediaType.Skip(6).All(ch => char.IsAsciiLetterOrDigit(ch) || ch is '.' or '-' or '+'))
+            throw new ContractException(allowVideo ? "An audio or video MIME type is required." : "An audio MIME type is required.");
         try
         {
             var bytes = Convert.FromBase64String(encoded);

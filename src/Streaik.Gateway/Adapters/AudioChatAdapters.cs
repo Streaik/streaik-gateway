@@ -14,9 +14,10 @@ public static partial class StreaikGateway
 {
     private static async Task<bool> TryChatAudioAsync(GatewayCall call, ChatCompletionOptions request)
     {
-        if (call.Get<IChatAudioRoutingProvider>() is not { } route) return false;
-        var speech = route.IsSpeechModel(call.NativeModel);
-        if (!speech && !route.IsTranscriptionModel(call.NativeModel)) return false;
+        var route = call.Get<IChatAudioRoutingProvider>();
+        var speech = call.DeapiModelType == "speech" || route?.IsSpeechModel(call.NativeModel) == true;
+        var transcription = call.DeapiModelType == "transcription" || route?.IsTranscriptionModel(call.NativeModel) == true;
+        if (!speech && !transcription) return false;
         if (request.Tools?.Any() == true || request.ResponseFormat is not null
             || request.AdditionalProperties?.TryGetValue("n", out var choices) == true
                 && (choices.ValueKind != JsonValueKind.Number || !choices.TryGetInt32(out var count) || count != 1))
@@ -34,14 +35,14 @@ public static partial class StreaikGateway
             var format = request.Audio?.Format;
             var speechRequest = new AudioSpeechRequest { Model = call.NativeModel,
                 Input = user.Content.Text ?? string.Concat((parts ?? []).OfType<ChatMessageTextPart>().Select(part => part.Text)),
-                Voice = call.ProviderId is "deepdub" or "speechmatics" or "bineric" or "rime" or "fishaudio" or "neuphonic" or "murfai" ? request.Audio?.Voice switch
+                Voice = call.ProviderId is "deepdub" or "speechmatics" or "bineric" or "rime" or "fishaudio" or "neuphonic" or "murfai" or "deapi" ? request.Audio?.Voice switch
                 {
                     ChatCompletionBuiltInVoice voice => voice.Name,
                     ChatCompletionCustomVoice voice => voice.Id,
                     _ => null
                 } : null,
                 ResponseFormat = format == "pcm16" && !(call.ProviderId == "audixa" && request.Stream == true) ? "pcm" : format,
-                AdditionalProperties = call.ProviderId is "astica" or "unrealspeech" or "speechmatics" or "bineric" or "rime" or "stabilityai" or "fishaudio" or "neuphonic" or "murfai"
+                AdditionalProperties = call.ProviderId is "astica" or "unrealspeech" or "speechmatics" or "bineric" or "rime" or "stabilityai" or "fishaudio" or "neuphonic" or "murfai" or "deapi"
                     ? MergeAudioOptions(call, request, request.Audio?.AdditionalProperties)
                     : request.Audio?.AdditionalProperties };
             if (request.Stream == true && call.Get<IStreamingSpeechEventsProvider>() is { } events
@@ -68,7 +69,7 @@ public static partial class StreaikGateway
             var inputType = audio.Format switch { "wav" => "audio/wav", "mp3" => "audio/mpeg", _ => throw new ContractException("Use wav or mp3 input audio.", 422) };
             var (bytes, mediaType) = ReadAudio(audio.Data, inputType);
             using var input = new MemoryStream(bytes, writable: false);
-            var options = call.ProviderId is "bergetai" or "speechmatics" or "bineric" or "fishaudio" ? MergeAudioOptions(call, request, audio.AdditionalProperties) : audio.AdditionalProperties;
+            var options = call.ProviderId is "bergetai" or "speechmatics" or "bineric" or "fishaudio" or "deapi" ? MergeAudioOptions(call, request, audio.AdditionalProperties) : audio.AdditionalProperties;
             var result = await call.Require<ITranscriptionProvider>().TranscribeAsync(call.NativeModel, input, mediaType, $"audio.{audio.Format}",
                 null, options, call.Headers, call.Ct);
             if (request.Stream == true) await call.WriteChatStreamAsync(BufferedStream(new() { Role = "assistant", Content = result.Text }, result.ProviderMetadata));
@@ -131,8 +132,8 @@ public static partial class StreaikGateway
     private static async Task<bool> TryVercelAudioChatAsync(GatewayCall call, ChatRequest request)
     {
         var route = call.Get<IChatAudioRoutingProvider>();
-        var speech = route?.IsSpeechModel(call.NativeModel) == true;
-        var transcription = route?.IsTranscriptionModel(call.NativeModel) == true;
+        var speech = call.DeapiModelType == "speech" || route?.IsSpeechModel(call.NativeModel) == true;
+        var transcription = call.DeapiModelType == "transcription" || route?.IsTranscriptionModel(call.NativeModel) == true;
         var edgeSpeak = call.ProviderId == "edgespeak";
         if (edgeSpeak && call.Get<IModelListingProvider>() is { } listing)
         {
@@ -252,10 +253,10 @@ public static partial class StreaikGateway
             { Model = call.Model, Timestamp = DateTimeOffset.UtcNow, Usage = new(), ProviderMetadata = metadata } };
     }
 
-    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId is "typecast" or "async" or "audixa" or "deepdub" or "astica" or "unrealspeech" or "speechmatics" or "bineric" or "rime" or "stabilityai" or "fishaudio" or "wellsaid" or "neuphonic" or "murfai" or "resembleai"
+    private static bool UseSpeechFileAdapter(GatewayCall call) => call.DeapiModelType == "speech" || call.ProviderId is "typecast" or "async" or "audixa" or "deepdub" or "astica" or "unrealspeech" or "speechmatics" or "bineric" or "rime" or "stabilityai" or "fishaudio" or "wellsaid" or "neuphonic" or "murfai" or "resembleai"
         && call.Get<IChatAudioRoutingProvider>()?.IsSpeechModel(call.NativeModel) == true;
 
-    private static bool UseTranscriptionFileAdapter(GatewayCall call) => call.ProviderId is "bergetai" or "speechmatics" or "bineric" or "fishaudio" or "addisai" or "resembleai"
+    private static bool UseTranscriptionFileAdapter(GatewayCall call) => call.DeapiModelType == "transcription" || call.ProviderId is "bergetai" or "speechmatics" or "bineric" or "fishaudio" or "addisai" or "resembleai"
         && call.Get<IChatAudioRoutingProvider>()?.IsTranscriptionModel(call.NativeModel) == true;
 
     private static async Task TranscriptionViaResponsesAsync(GatewayCall call, ResponseRequest request)

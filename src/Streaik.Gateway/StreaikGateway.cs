@@ -92,6 +92,7 @@ public static partial class StreaikGateway
         if (request.Store == true) throw new ContractException("Streaik does not store Chat Completions.");
         request.Store = false;
         request.Model = call.NativeModel;
+        await call.ResolveDeapiModelAsync();
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ChatAsync(call, request, image); return; }
         if (VideoRoute(call) is { } video) { await VideoViaChatAsync(call, request, video); return; }
         if (await TryChatAudioAsync(call, request)) return;
@@ -101,7 +102,7 @@ public static partial class StreaikGateway
                 await ProtocolAdapters.ChatViaResponsesAsync(call, request, preferred);
             else if (call.Get<IMessagesProvider>() is { } messages) await ProtocolAdapters.ChatViaMessagesAsync(call, request, messages);
             else if (call.Get<IResponsesProvider>() is { } responses) await ProtocolAdapters.ChatViaResponsesAsync(call, request, responses);
-            else if (call.Get<IImageProvider>() is { } images) await ImageAdapters.ChatAsync(call, request, images);
+            else if (call.ProviderId != "deapi" && call.Get<IImageProvider>() is { } images) await ImageAdapters.ChatAsync(call, request, images);
             else await GatewayCall.ErrorAsync(context, Protocol.Chat, 400, "Provider does not support this protocol.");
             return;
         }
@@ -118,6 +119,7 @@ public static partial class StreaikGateway
             throw new ContractException("Streaik Responses require inline history and do not support stored or background responses.");
         request.Store = false;
         request.Model = call.NativeModel;
+        await call.ResolveDeapiModelAsync();
         if (UseSpeechFileAdapter(call)) { await SpeechViaResponsesAsync(call, request); return; }
         if (UseTranscriptionFileAdapter(call)) { await TranscriptionViaResponsesAsync(call, request); return; }
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ResponsesAsync(call, request, image); return; }
@@ -126,7 +128,7 @@ public static partial class StreaikGateway
         {
             if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages) await ProtocolAdapters.ResponsesViaMessagesAsync(call, request, messages);
             else if (call.GetChatBridge() is { } chat) await ProtocolAdapters.ResponsesViaChatAsync(call, request, chat);
-            else if (call.Get<IImageProvider>() is { } images) await ImageAdapters.ResponsesAsync(call, request, images);
+            else if (call.ProviderId != "deapi" && call.Get<IImageProvider>() is { } images) await ImageAdapters.ResponsesAsync(call, request, images);
             else await GatewayCall.ErrorAsync(context, Protocol.Responses, 400, "Provider does not support this protocol.");
             return;
         }
@@ -141,6 +143,7 @@ public static partial class StreaikGateway
         var request = await ReadAsync<MessagesRequest>(context, MessagesJson.Default);
         var call = new GatewayCall(context, request.Model);
         request.Model = call.NativeModel;
+        await call.ResolveDeapiModelAsync();
         if (UseSpeechFileAdapter(call)) { await SpeechViaMessagesAsync(call, request); return; }
         if (UseTranscriptionFileAdapter(call)) { await TranscriptionViaMessagesAsync(call, request); return; }
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.MessagesAsync(call, request, image); return; }
@@ -149,7 +152,7 @@ public static partial class StreaikGateway
         {
             if (!call.PreferChatBridge && call.Get<IResponsesProvider>() is { } responses) await ProtocolAdapters.MessagesViaResponsesAsync(call, request, responses);
             else if (call.GetChatBridge() is { } chat) await ProtocolAdapters.MessagesViaChatAsync(call, request, chat);
-            else if (call.Get<IImageProvider>() is { } images) await ImageAdapters.MessagesAsync(call, request, images);
+            else if (call.ProviderId != "deapi" && call.Get<IImageProvider>() is { } images) await ImageAdapters.MessagesAsync(call, request, images);
             else await GatewayCall.ErrorAsync(context, Protocol.Messages, 400, "Provider does not support this protocol.");
             return;
         }
@@ -163,13 +166,19 @@ public static partial class StreaikGateway
         if (request.Reasoning is not (null or "low" or "medium" or "high"))
             throw new ContractException("reasoning must be null, low, medium, or high.");
         var call = new GatewayCall(context, request.Model);
+        await call.ResolveDeapiModelAsync();
         if (await ImageRouteAsync(call) is { } image) await ImageAdapters.VercelAsync(call, request, image);
         else if (VideoRoute(call) is { } video) await VideoViaVercelAsync(call, request, video);
-        else if (!await TryVercelAudioChatAsync(call, request)) await VercelAdapter.RunAsync(call, request);
+        else if (!await TryVercelAudioChatAsync(call, request))
+        {
+            if (call.ProviderId == "deapi") throw new ContractException("Provider model does not support chat.", 422);
+            await VercelAdapter.RunAsync(call, request);
+        }
     }
 
     private static async Task<IImageProvider?> ImageRouteAsync(GatewayCall call)
-        => call.Get<IImageModelRoutingProvider>() is { } provider && await provider.IsImageModelAsync(call.NativeModel, call.Ct) ? provider : null;
+        => call.DeapiModelType == "image" ? call.Get<IImageProvider>()
+            : call.Get<IImageModelRoutingProvider>() is { } provider && await provider.IsImageModelAsync(call.NativeModel, call.Ct) ? provider : null;
 
     private static async Task<T> ReadAsync<T>(HttpContext context, JsonSerializerOptions options)
     {

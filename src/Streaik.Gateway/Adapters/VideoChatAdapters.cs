@@ -14,7 +14,7 @@ public static partial class StreaikGateway
     private const string VideoTool = "generate_video";
 
     private static IVideoProvider? VideoRoute(GatewayCall call)
-        => call.ProviderId == "astria" || (call.ProviderId, call.NativeModel) is ("lumaai", "ray-3.2")
+        => call.DeapiModelType == "video" || call.ProviderId == "astria" || (call.ProviderId, call.NativeModel) is ("lumaai", "ray-3.2")
             ? call.Get<IVideoProvider>() : null;
 
     private static Task VideoViaVercelAsync(GatewayCall call, ChatRequest request, IVideoProvider provider)

@@ -33,6 +33,23 @@ internal sealed class GatewayCall
     public string NativeModel { get; }
     public IReadOnlyDictionary<string, string> Headers { get; }
     public CancellationToken Ct => Context.RequestAborted;
+    internal string? DeapiModelType { get; private set; }
+
+    // DeAPI publishes the media type per model; its slugs are not a routing convention.
+    internal async Task ResolveDeapiModelAsync()
+    {
+        if (ProviderId != "deapi") return;
+        if (string.IsNullOrWhiteSpace(Context.RequestServices.GetService<IProviderCredentials>()?.GetApiKey(ProviderId)))
+            throw new ProviderCredentialException(ProviderId);
+        await foreach (var model in Require<IModelListingProvider>().ListModelsAsync(Ct).WithCancellation(Ct))
+        {
+            if (!string.Equals(model.Id, NativeModel, StringComparison.Ordinal)) continue;
+            DeapiModelType = model.Type;
+            return;
+        }
+        throw new ContractException("Unknown DeAPI model.", 404);
+    }
+
     // These providers use Chat Completions for translated turns, even when they have other native endpoints.
     public bool PreferChatBridge => ProviderId is "nebius" or "mixedbread" or "tetrate" or "upstage" or "akashml" or "coralbricks" or "doubleword" or "clarifai" or "tensorblock" or "aichixia" or "edgespeak" or "cognitivessai" or "baseapi";
     public T? Get<T>() where T : class => Context.RequestServices.GetKeyedService<T>(ProviderId);
