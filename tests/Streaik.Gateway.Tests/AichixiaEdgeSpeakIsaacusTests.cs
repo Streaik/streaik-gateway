@@ -219,7 +219,7 @@ public sealed class AichixiaEdgeSpeakIsaacusTests
     {
         await using var host = await Start();
         var payload = GatewayTests.Request(Vercel, "edgespeak/vendor/reader/user:lee", true);
-        payload["temperature"] = 0.6;
+        payload["providerMetadata"] = JsonNode.Parse("""{"edgespeak":{"temperature":0.6}}""");
         using var response = await host.PostAsync(Vercel, payload.ToJsonString());
         var body = await GatewayTests.Success(response);
         Assert.Contains("data:audio/wav;base64,AQID", body);
