@@ -55,7 +55,8 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool crusoeAtlasCloudDeepdub = false, bool doublewordBananaPeelCreora = false, bool akumiClarifaiBespokeLabs = false,
         bool arkRouteBergetAstica = false, bool bastionTensorUnreal = false, bool aichixiaEdgeSpeakIsaacus = false,
         bool abliterationAIMagicxSpeechmatics = false, bool dandoloBinericAstria = false, bool asiOneRimeStabilityAI = false,
-        bool avianFishAudioLumaAI = false, bool augureCognitivessAIHorde = false, bool tikHubAIWellSaidYollomi = false)
+        bool avianFishAudioLumaAI = false, bool augureCognitivessAIHorde = false, bool tikHubAIWellSaidYollomi = false,
+        bool commonstackLeonardoNeuphonic = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -93,6 +94,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (avianFishAudioLumaAI) builder.Services.AddAvian().AddFishAudio().AddLumaAI();
         if (augureCognitivessAIHorde) builder.Services.AddAugure().AddCognitivessAI().AddAIHorde();
         if (tikHubAIWellSaidYollomi) builder.Services.AddTikHubAI().AddWellSaid().AddYollomi();
+        if (commonstackLeonardoNeuphonic) builder.Services.AddCommonstack().AddLeonardo().AddNeuphonic();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -126,6 +128,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (avianFishAudioLumaAI) ids.AddRange(["avian", "fishaudio", "lumaai", "lumaai-delivery"]);
         if (augureCognitivessAIHorde) ids.AddRange(["augure", "cognitivessai", "aihorde", "aihorde-images", "aihorde-assets"]);
         if (tikHubAIWellSaidYollomi) ids.AddRange(["tikhubai", "wellsaid", "yollomi", "yollomi-assets"]);
+        if (commonstackLeonardoNeuphonic) ids.AddRange(["commonstack", "leonardo", "leonardo-assets", "neuphonic"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

@@ -81,8 +81,8 @@ public static partial class StreaikGateway
         var metadata = (upstream as SpeechProviderResponse)?.ProviderMetadata;
         var format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" or "bineric" or "stabilityai"
             ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type);
-        if (call.ProviderId == "rime" && metadata?.TryGetValue("rime", out var rime) == true
-            && rime.ValueKind == JsonValueKind.Object && rime.TryGetProperty("audioFormat", out var nativeFormat)
+        if (call.ProviderId is "rime" or "neuphonic" && metadata?.TryGetValue(call.ProviderId, out var native) == true
+            && native.ValueKind == JsonValueKind.Object && native.TryGetProperty("audioFormat", out var nativeFormat)
             && nativeFormat.ValueKind == JsonValueKind.String)
             format = nativeFormat.GetString() ?? format;
         await context.Response.WriteAsJsonAsync(new SpeechResponse { Audio = new() {
