@@ -45,7 +45,7 @@ internal static partial class VercelAdapter
                 }
             foreach (var (id, output, isError) in results) history.Result(id, output, isError);
         }
-        var nativeRequest = history.Build(call.NativeModel, request.MaxOutputTokens, request.Temperature, request.TopP, true);
+        var nativeRequest = history.Build(call.NativeModel, request.MaxOutputTokens, temperature: null, topP: null, stream: true);
         var tools = (request.Tools ?? []).DistinctBy(tool => tool.Name).Select(tool => new MessageToolDefinition
         { Name = tool.Name, Description = tool.Description, InputSchema = ToolInput(tool.InputSchema ?? new ToolSchema { Type = "object" }),
             DeferLoading = tool.DeferLoading, AllowedCallers = tool.AllowedCallers?.ToList() }).ToList();
@@ -56,12 +56,25 @@ internal static partial class VercelAdapter
             nativeRequest.ToolChoice = choice switch
             { "auto" => new MessageToolChoice(), "required" => new MessageToolChoice { Type = "any" },
                 _ => new MessageToolChoice { Type = "tool", Name = choice } };
-        if (!viaChat && Option(request, call.ProviderId, "thinking") is { ValueKind: JsonValueKind.Object } thinking)
-            nativeRequest.Thinking = thinking.Deserialize<MessagesThinkingConfig>(MessagesJson.Default);
+        if (!viaChat)
+        {
+            var thinking = Option(request, call.ProviderId, "thinking");
+            var config = Option(request, call.ProviderId, "output_config");
+            nativeRequest.Thinking = ReadNativeOption<MessagesThinkingConfig>(thinking, MessagesJson.Default, "thinking");
+            nativeRequest.OutputConfig = ReadNativeOption<MessagesOutputConfig>(config, MessagesJson.Default, "output_config");
+            if (request.Reasoning is { } effort)
+            {
+                if (thinking is null) nativeRequest.Thinking = new MessagesThinkingConfig { Type = "adaptive" };
+                // Explicit disabled or budget-based thinking owns the reasoning behavior.
+                if (nativeRequest.Thinking?.Type == "adaptive" && (config is null || (config is { ValueKind: JsonValueKind.Object } options
+                    && !options.EnumerateObject().Any(property => property.Name.Equals("effort", StringComparison.OrdinalIgnoreCase)))))
+                    (nativeRequest.OutputConfig ??= new MessagesOutputConfig()).Effort = effort;
+            }
+        }
         return nativeRequest;
     }
 
-    private static async IAsyncEnumerable<UIMessagePart> MessageParts(GatewayCall call, ChatRequest request, IAsyncEnumerable<MessageStreamPart> source)
+    private static async IAsyncEnumerable<UIMessagePart> MessageParts(GatewayCall call, IAsyncEnumerable<MessageStreamPart> source)
     {
         var blocks = new Dictionary<int, (MessageContentBlock Block, StringBuilder Arguments)>();
         var usage = new MessagesUsage();
@@ -141,7 +154,7 @@ internal static partial class VercelAdapter
                     stop = part.Delta?.StopReason ?? stop;
                     MessagesHistory.MergeUsage(usage, part.Usage); break;
                 case { Type: "message_stop" }:
-                    yield return Finish(call, request, stop switch { "tool_use" => "tool-calls", "max_tokens" or "model_context_window_exceeded" => "length",
+                    yield return Finish(call, stop switch { "tool_use" => "tool-calls", "max_tokens" or "model_context_window_exceeded" => "length",
                         "refusal" => "content-filter", "pause_turn" => "other", _ => "stop" }, MessagesHistory.TotalInput(usage), usage.OutputTokens,
                         call.ProviderId, JsonSerializer.SerializeToElement(usage, MessagesJson.Default), metadata,
                         cost: await GatewayPricing.EstimateAsync(call, upstreamModel, usage));

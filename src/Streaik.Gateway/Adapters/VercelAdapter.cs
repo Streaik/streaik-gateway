@@ -27,15 +27,11 @@ internal static partial class VercelAdapter
             .Where(tool => tool.Approval is not null || tool.State is "approval-requested" or "approval-responded").ToList();
         if (reviews.Any(tool => tool.ProviderExecuted == true))
             throw new ContractException("API Chat only accepts client tool result approvals.");
-        var reviewNames = request.ClientToolResultApproval
-            ? (request.Tools ?? []).Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal) : [];
-        if (request.ClientToolResultApproval && !call.PreferChatBridge && call.Get<IResponsesProvider>() is not null)
-            reviewNames.UnionWith(NamespaceFunctions(request, call.ProviderId));
-        var reviewClientTools = reviewNames.Count > 0;
         // A registered, user-bound signer can be unavailable for requests without a subject.
         // That is distinct from a host intentionally running with signing disabled.
-        if (signer is null && (reviewClientTools || reviews.Count != 0)
-            && services.GetService<IServiceProviderIsService>()?.IsService(typeof(ToolApprovalSigner)) == true)
+        var signingUnavailable = signer is null
+            && services.GetService<IServiceProviderIsService>()?.IsService(typeof(ToolApprovalSigner)) == true;
+        if (signingUnavailable && (request.Tools?.Count > 0 || reviews.Count != 0 || HasNativeClientTools(call, request)))
             throw new ContractException("Tool approval signing is unavailable for this request.");
         try { signer?.ValidateIncoming(request.Messages); }
         catch (ToolApprovalSignatureException error) { throw new ContractException(error.Message); }
@@ -46,11 +42,11 @@ internal static partial class VercelAdapter
             var native = await ResponseRequestFromAsync(call, request);
             await GatewayContainerArtifacts.PrepareAsync(call, native);
             var artifacts = new GatewayContainerArtifacts.Turn(call);
-            stream = ResponseParts(call, request, responses.StreamResponseAsync(native, call.Headers, call.Ct), artifacts,
+            stream = ResponseParts(call, responses.StreamResponseAsync(native, call.Headers, call.Ct), artifacts,
                 native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true);
         }
         else if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
-            stream = MessageParts(call, request, messages.StreamMessageAsync(MessagesRequestFrom(call, request), call.Headers, call.Ct));
+            stream = MessageParts(call, messages.StreamMessageAsync(MessagesRequestFrom(call, request), call.Headers, call.Ct));
         else if (call.GetChatBridge() is { } chat)
         {
             var nativeOptions = call.Get<INativeChatOptionsProvider>() is not null;
@@ -59,8 +55,9 @@ internal static partial class VercelAdapter
                 throw new ContractException("Provider-specific Vercel options require a native adapter.");
             var translatePresentation = call.ProviderId == "cohere";
             var native = ChatCompletionsBridge.Request(MessagesRequestFrom(call, request, viaChat: true), request.MaxOutputTokens, translatePresentation);
+            if (request.Reasoning is { } effort) native.ReasoningEffort = new ChatCompletionReasoningEffort(effort);
             if (nativeOptions) native.AdditionalProperties = ApplyNativeOptions(call, request, native, Web);
-            stream = MessageParts(call, request, ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), nativeOptions,
+            stream = MessageParts(call, ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), nativeOptions,
                 translatePresentation: translatePresentation));
         }
         else if (call.Get<IImageProvider>() is { } images)
@@ -73,34 +70,34 @@ internal static partial class VercelAdapter
             await GatewayCall.ErrorAsync(call.Context, Protocol.Vercel, 400, "Provider does not support this protocol.");
             return;
         }
-        if (reviewClientTools)
-            stream = ReviewClientResults(stream, reviewNames, call.Ct);
+        stream = ReviewClientResults(stream, signingUnavailable, call.Ct);
         await call.WriteVercelStreamAsync(signer is null ? stream : signer.SignOutgoing(stream, call.Ct));
     }
 
-    private static IEnumerable<string> NamespaceFunctions(ChatRequest request, string provider)
+    private static bool HasNativeClientTools(GatewayCall call, ChatRequest request)
     {
-        if (Option(request, provider, "tools") is not { ValueKind: JsonValueKind.Array } tools) yield break;
+        if (call.PreferChatBridge || Option(request, call.ProviderId, "tools") is not { ValueKind: JsonValueKind.Array } tools)
+            return false;
+        var responses = call.Get<IResponsesProvider>() is not null;
+        if (!responses && call.Get<IMessagesProvider>() is null) return false;
         foreach (var entry in tools.EnumerateArray())
         {
-            if (entry.ValueKind != JsonValueKind.Object || !entry.TryGetProperty("type", out var type)
-                || type.ValueKind != JsonValueKind.String || !type.ValueEquals("namespace")
-                || !entry.TryGetProperty("tools", out var functions) || functions.ValueKind != JsonValueKind.Array) continue;
-            foreach (var function in functions.EnumerateArray())
-                if (function.ValueKind == JsonValueKind.Object && function.TryGetProperty("type", out var functionType)
-                    && functionType.ValueKind == JsonValueKind.String && functionType.ValueEquals("function")
-                    && function.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
-                    yield return name.GetString()!;
+            if (entry.ValueKind != JsonValueKind.Object) continue;
+            var type = entry.TryGetProperty("type", out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+            if (responses ? type is "function" or "namespace" : type is null or "custom") return true;
         }
+        return false;
     }
 
     private static async IAsyncEnumerable<UIMessagePart> ReviewClientResults(IAsyncEnumerable<UIMessagePart> stream,
-        HashSet<string> declared, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        bool signingUnavailable, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         await foreach (var part in stream.WithCancellation(cancellationToken))
         {
+            if (part is ToolCallPart { ProviderExecuted: false } && signingUnavailable)
+                throw new ContractException("Tool approval signing is unavailable for this request.");
             yield return part;
-            if (part is ToolCallPart { ProviderExecuted: false } tool && declared.Contains(tool.ToolName))
+            if (part is ToolCallPart { ProviderExecuted: false } tool)
                 yield return new ToolApprovalRequestUIPart
                 { ToolCallId = tool.ToolCallId, ApprovalId = Guid.NewGuid().ToString("N") };
         }
@@ -116,9 +113,20 @@ internal static partial class VercelAdapter
         => metadata?.TryGetValue(provider, out var value) == true && value is JsonElement { ValueKind: JsonValueKind.Object } element
             && element.TryGetProperty(key, out var native) && native.ValueKind == JsonValueKind.Object ? native.Deserialize<T>(json) : null;
 
-    private static JsonElement? Option(ChatRequest request, string provider, string key)
-        => request.ProviderMetadata?.TryGetValue(provider, out var value) == true && value.ValueKind == JsonValueKind.Object
-            && value.TryGetProperty(key, out var setting) ? setting : null;
+    private static JsonElement? Option(ChatRequest request, string provider, string key, bool ignoreCase = false)
+    {
+        if (request.ProviderMetadata?.TryGetValue(provider, out var value) != true || value.ValueKind != JsonValueKind.Object)
+            return null;
+        if (!ignoreCase) return value.TryGetProperty(key, out var setting) ? setting : null;
+        return value.EnumerateObject().LastOrDefault(property => property.Name.Equals(key, StringComparison.OrdinalIgnoreCase)).Value
+            is { ValueKind: not JsonValueKind.Undefined } option ? option : null;
+    }
+
+    private static T? ReadNativeOption<T>(JsonElement? option, JsonSerializerOptions json, string name) where T : class
+    {
+        try { return option?.Deserialize<T>(json); }
+        catch (JsonException) { throw new ContractException($"Invalid provider option '{name}'."); }
+    }
 
     private static Dictionary<string, JsonElement>? ApplyNativeOptions<T>(GatewayCall call, ChatRequest request, T native, JsonSerializerOptions json)
         where T : class
@@ -157,20 +165,16 @@ internal static partial class VercelAdapter
     // Never read or translate any submitted output on the denial path.
     private static (string Output, bool IsError) ClientToolResult(ToolInvocationPart tool)
     {
-        if (tool.Approval is { } approval)
-        {
-            if (approval.Approved == false && tool.State is "approval-responded" or "output-denied")
-                return ("The user declined to share this tool result.", true);
-            if (approval.Approved != true || tool.State is not ("output-available" or "output-error" or "approval-responded")
-                || (tool.Output is null && tool.ErrorText is null))
-                throw new ContractException("Client function calls require an approved result before continuing.");
-        }
-        else if (tool.State is not ("output-available" or "output-error"))
-            throw new ContractException("Client function calls require a result before continuing.");
+        if (tool.Approval is { Approved: false } && tool.State is "approval-responded" or "output-denied")
+            return ("The user declined to share this tool result.", true);
+        if (tool.Approval is not { Id.Length: > 0, Approved: true }
+            || tool.State is not ("output-available" or "output-error" or "approval-responded")
+            || (tool.Output is null && tool.ErrorText is null))
+            throw new ContractException("Client function calls require an approved result before continuing.");
         return (tool.ErrorText ?? ToolOutput(tool.Output), tool.State == "output-error");
     }
 
-    private static FinishUIPart Finish(GatewayCall call, ChatRequest request, string reason, int? input, int? output,
+    private static FinishUIPart Finish(GatewayCall call, string reason, int? input, int? output,
         string provider, object? nativeUsage, Dictionary<string, JsonElement>? additional, long? timestamp = null, GatewayPrice? cost = null)
     {
         var metadata = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
@@ -193,7 +197,7 @@ internal static partial class VercelAdapter
         return new FinishUIPart { FinishReason = reason, MessageMetadata = new FinishMessageMetadata
         {
             Model = call.Model, Timestamp = timestamp is > 0 ? DateTimeOffset.FromUnixTimeSeconds(timestamp.Value) : DateTimeOffset.UtcNow,
-            Temperature = request.Temperature, Usage = new Usage { PromptTokens = input, CompletionTokens = output,
+            Usage = new Usage { PromptTokens = input, CompletionTokens = output,
                 TotalTokens = input.HasValue && output.HasValue ? input.Value + output.Value : null },
             ProviderMetadata = GatewayPricing.Attach(metadata.Count == 0 ? null : metadata, cost)
         } };

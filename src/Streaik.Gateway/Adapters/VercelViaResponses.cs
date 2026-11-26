@@ -121,21 +121,25 @@ internal static partial class VercelAdapter
         if (request.ResponseFormat is not null)
             throw new ContractException("This Vercel adapter does not translate response_format.");
         var nativeOptions = call.Get<INativeChatOptionsProvider>() is not null;
+        var rawReasoning = Option(request, call.ProviderId, "reasoning", ignoreCase: nativeOptions);
         var upstream = new ResponseRequest
         {
-            Model = call.NativeModel, Store = false, Stream = true, Input = new ResponseInput(input), Temperature = request.Temperature,
-            TopP = request.TopP, MaxOutputTokens = request.MaxOutputTokens, MaxToolCalls = request.MaxToolCalls, Include = include, Text = textOptions,
+            Model = call.NativeModel, Store = false, Stream = true, Input = new ResponseInput(input),
+            MaxOutputTokens = request.MaxOutputTokens, MaxToolCalls = request.MaxToolCalls, Include = include, Text = textOptions,
             Tools = tools.Count == 0 ? null : tools, ToolChoice = request.ToolChoice switch
                 { null => null, "auto" or "required" or "none" => request.ToolChoice, { } name => new { type = "function", name } },
-            Reasoning = !nativeOptions && Option(request, call.ProviderId, "reasoning") is { ValueKind: JsonValueKind.Object } reasoning
-                ? reasoning.Deserialize<Reasoning>(ResponseJson.Default) : null
+            Reasoning = !nativeOptions && rawReasoning is { ValueKind: JsonValueKind.Object }
+                ? ReadNativeOption<Reasoning>(rawReasoning, ResponseJson.Default, "reasoning") : null
         };
         if (nativeOptions)
             upstream.AdditionalProperties = ApplyNativeOptions(call, request, upstream, ResponseJson.Default);
+        if (request.Reasoning is { } effort && (rawReasoning is null || (rawReasoning is { ValueKind: JsonValueKind.Object } config
+            && !config.EnumerateObject().Any(property => property.Name.Equals("effort", StringComparison.OrdinalIgnoreCase)))))
+            (upstream.Reasoning ??= new Reasoning()).Effort = effort;
         return upstream;
     }
 
-    private static async IAsyncEnumerable<UIMessagePart> ResponseParts(GatewayCall call, ChatRequest request,
+    private static async IAsyncEnumerable<UIMessagePart> ResponseParts(GatewayCall call,
         IAsyncEnumerable<ResponseStreamPart> source, GatewayContainerArtifacts.Turn artifacts, bool includeEncryptedReasoning)
     {
         var text = new HashSet<(string Item, int Index)>();
@@ -252,7 +256,7 @@ internal static partial class VercelAdapter
             var usage = result.NormalizedUsage;
             var filtered = result.IncompleteDetails is { ValueKind: JsonValueKind.Object } details
                 && details.TryGetProperty("reason", out var reason) && reason.GetString() == "content_filter";
-            yield return Finish(call, request, refusal || filtered ? "content-filter" : result.Status == "incomplete" ? "length"
+            yield return Finish(call, refusal || filtered ? "content-filter" : result.Status == "incomplete" ? "length"
                 : sentCalls.Count > 0 ? "tool-calls" : "stop", usage?.InputTokens, usage?.OutputTokens, call.ProviderId,
                 result.Usage, result.AdditionalProperties, result.CreatedAt,
                 GatewayPricing.Cost(result) ?? await GatewayPricing.EstimateAsync(call, result.Model, result.Usage));

@@ -160,6 +160,8 @@ public static partial class StreaikGateway
     private static async Task VercelAsync(HttpContext context)
     {
         var request = await ReadAsync<ChatRequest>(context, JsonSerializerOptions.Web);
+        if (request.Reasoning is not (null or "low" or "medium" or "high"))
+            throw new ContractException("reasoning must be null, low, medium, or high.");
         var call = new GatewayCall(context, request.Model);
         if (await ImageRouteAsync(call) is { } image) await ImageAdapters.VercelAsync(call, request, image);
         else if (AstriaVideo(call) is { } video) await VideoViaVercelAsync(call, request, video);

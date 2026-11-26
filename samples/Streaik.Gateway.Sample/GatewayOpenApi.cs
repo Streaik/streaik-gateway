@@ -97,6 +97,15 @@ internal static class GatewayOpenApi
             schema.AnyOf = [Text(), new OpenApiSchema { Type = JsonSchemaType.Boolean }];
             schema.Type = null;
         }
+        else if (type == typeof(ChatRequest) && schema.Properties?.ContainsKey("reasoning") == true)
+        {
+            schema.Properties["reasoning"] = new OpenApiSchema
+            {
+                Type = JsonSchemaType.String | JsonSchemaType.Null,
+                Enum = [JsonValue.Create("low"), JsonValue.Create("medium"), JsonValue.Create("high"), null!],
+                Description = "Reasoning effort for supported models. Omit or use null for no preference. Provider-specific reasoning options take precedence."
+            };
+        }
 
         // Some gateway-required fields are nullable on the shared upstream DTOs.
         string[] required = type switch

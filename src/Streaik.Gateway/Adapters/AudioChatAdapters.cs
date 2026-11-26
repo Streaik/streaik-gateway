@@ -181,8 +181,6 @@ public static partial class StreaikGateway
             if (edgeSpeak)
             {
                 var nativeOptions = SpeechOptions(call, request.ProviderMetadata) ?? new();
-                if (request.Temperature is { } temperature) nativeOptions.TryAdd("temperature", JsonSerializer.SerializeToElement(temperature, Web));
-                if (request.TopP is { } topP) nativeOptions.TryAdd("top_p", JsonSerializer.SerializeToElement(topP, Web));
                 var native = new AudioSpeechRequest { Model = call.NativeModel, Input = input, StreamFormat = "sse", AdditionalProperties = nativeOptions };
                 using var buffer = new MemoryStream();
                 Dictionary<string, JsonElement>? finishedMetadata = null;
