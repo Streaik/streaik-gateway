@@ -57,7 +57,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool abliterationAIMagicxSpeechmatics = false, bool dandoloBinericAstria = false, bool asiOneRimeStabilityAI = false,
         bool avianFishAudioLumaAI = false, bool augureCognitivessAIHorde = false, bool tikHubAIWellSaidYollomi = false,
         bool commonstackLeonardoNeuphonic = false, bool baseApiByteSpaceCambai = false, bool aiBramhaReveAddisAI = false,
-        bool antimatterMurfAIPicsart = false)
+        bool antimatterMurfAIPicsart = false, bool inceptionRavenResemble = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -99,6 +99,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (baseApiByteSpaceCambai) builder.Services.AddBaseAPI().AddByteSpace().AddCAMBAI();
         if (aiBramhaReveAddisAI) builder.Services.AddAIBramha().AddReve().AddAddisAI();
         if (antimatterMurfAIPicsart) builder.Services.AddAntimatter().AddMurfAI().AddPicsart();
+        if (inceptionRavenResemble) builder.Services.AddInceptionLabs().AddRaven().AddResembleAI();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -136,6 +137,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (baseApiByteSpaceCambai) ids.AddRange(["baseapi", "bytespace", "cambai", "cambai-assets"]);
         if (aiBramhaReveAddisAI) ids.AddRange(["aibramha", "reve", "addisai"]);
         if (antimatterMurfAIPicsart) ids.AddRange(["antimatter", "murfai", "picsart"]);
+        if (inceptionRavenResemble) ids.AddRange(["inceptionlabs", "raven", "resembleai"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));
