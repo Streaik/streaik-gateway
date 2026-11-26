@@ -30,6 +30,34 @@ public sealed class RealtimeProviderTests
     }
 
     [Fact]
+    public async Task Voice_token_providers_preserve_native_options_without_a_shared_session_translation()
+    {
+        await using var host = await FixtureHost.StartAsync(request => request.Host == "api.x.ai"
+            ? FixtureHost.Json("""{"value":"temporary-xai"}""")
+            : FixtureHost.Json("""{"name":"auth_tokens/temporary-google"}"""), liveProviders: true);
+        using var xai = await host.PostAsync("/api/realtime/token/xai/grok-voice-latest", """
+            {"sessionConfig":{"providerOptions":{"xai":{"expires_after":{"anchor":"created_at","seconds":60}}}}}
+            """, ("X-Xai-Key", "fixture"));
+        using var google = await host.PostAsync("/api/realtime/token/google/gemini-2.5-flash-native-audio-preview", """
+            {"sessionConfig":{"providerOptions":{"google":{"bidiGenerateContentSetup":{"model":"models/gemini-2.5-flash-native-audio-preview",
+              "generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Puck"}}}},
+              "inputAudioTranscription":{},"realtimeInputConfig":{"automaticActivityDetection":{"disabled":true}}}}}}}
+            """, ("X-Google-Key", "fixture"));
+        Assert.True(xai.Headers.CacheControl?.NoStore);
+        Assert.True(google.Headers.CacheControl?.NoStore);
+        Assert.Contains("temporary-xai", await GatewayTests.Success(xai));
+        Assert.Contains("auth_tokens/temporary-google", await GatewayTests.Success(google));
+        var xaiRequest = Assert.Single(host.Requests, request => request.Host == "api.x.ai").Body!;
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"expires_after":{"anchor":"created_at","seconds":60}}"""), xaiRequest));
+        var googleRequest = Assert.Single(host.Requests, request => request.Host == "generativelanguage.googleapis.com").Body!;
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""
+            {"model":"models/gemini-2.5-flash-native-audio-preview",
+             "generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Puck"}}}},
+             "inputAudioTranscription":{},"realtimeInputConfig":{"automaticActivityDetection":{"disabled":true}}}
+            """), googleRequest["bidiGenerateContentSetup"]));
+    }
+
+    [Fact]
     public async Task Deepgram_browser_lease_uses_the_scoped_grant_and_never_returns_the_api_key()
     {
         var token = "temporary";

@@ -54,7 +54,7 @@ public sealed class ModelDirectoryTests
                   {"id":"models/gemini-embedding-001","tags":["real-time","translate","provider-tag"]}]}
                 """),
             "api.x.ai" => FixtureHost.Json("""
-                {"data":[{"id":"grok-voice-latest"}]}
+                {"data":[{"id":"grok-voice-latest","type":"model"}]}
                 """),
             _ => new HttpResponseMessage(HttpStatusCode.NotFound),
         }, media: true, liveProviders: true);
@@ -93,6 +93,17 @@ public sealed class ModelDirectoryTests
             Assert.Equal(type, (string?)model["type"]);
             Assert.Equal(tags.Order(), (model["tags"]?.AsArray().Select(tag => (string)tag!) ?? []).Order());
         }
+    }
+
+    [Fact]
+    public async Task Xai_exposes_grok_voice_when_the_language_model_directory_omits_it()
+    {
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""{"data":[{"id":"grok-4"}]}"""), liveProviders: true);
+        using var response = await host.GetAsync("/v1/models", ("X-Xai-Key", "fixture"));
+        var models = JsonNode.Parse(await GatewayTests.Success(response))!["data"]!.AsArray();
+        var voice = Assert.Single(models, model => (string?)model?["id"] == "xai/grok-voice-latest")!;
+        Assert.Equal("audio", (string?)voice["type"]);
+        Assert.Equal("realtime", (string?)Assert.Single(voice["tags"]!.AsArray()));
     }
 
     [Fact]
