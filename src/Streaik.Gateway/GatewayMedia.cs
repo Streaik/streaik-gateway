@@ -140,7 +140,10 @@ public static partial class StreaikGateway
         // Bind the same typed fields as the native endpoints, while preserving provider extensions.
         // Gateway-owned routing, input and transport fields cannot be supplied through provider options.
         var options = SelectedOptions(call, request.ProviderOptions, "model", "prompt", "n", "size", "stream", "response_format", "partial_images", "files", "images", "mask");
-        var body = options is null ? new JsonObject() : JsonSerializer.SerializeToNode(options, Web)!.AsObject();
+        // Yollomi native options can share a name with a standard field but have a different shape.
+        var body = options is null ? new JsonObject() : call.ProviderId == "yollomi"
+            ? new JsonObject { [call.ProviderId] = JsonSerializer.SerializeToNode(options, Web) }
+            : JsonSerializer.SerializeToNode(options, Web)!.AsObject();
         body["model"] = call.NativeModel;
         body["prompt"] = request.Prompt;
         if (request.Size is not null) body["size"] = request.Size;

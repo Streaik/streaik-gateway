@@ -251,7 +251,7 @@ public static partial class StreaikGateway
             { Model = call.Model, Timestamp = DateTimeOffset.UtcNow, Usage = new(), ProviderMetadata = metadata } };
     }
 
-    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId is "typecast" or "async" or "audixa" or "deepdub" or "astica" or "unrealspeech" or "speechmatics" or "bineric" or "rime" or "stabilityai" or "fishaudio"
+    private static bool UseSpeechFileAdapter(GatewayCall call) => call.ProviderId is "typecast" or "async" or "audixa" or "deepdub" or "astica" or "unrealspeech" or "speechmatics" or "bineric" or "rime" or "stabilityai" or "fishaudio" or "wellsaid"
         && call.Get<IChatAudioRoutingProvider>()?.IsSpeechModel(call.NativeModel) == true;
 
     private static bool UseTranscriptionFileAdapter(GatewayCall call) => call.ProviderId is "bergetai" or "speechmatics" or "bineric" or "fishaudio"
