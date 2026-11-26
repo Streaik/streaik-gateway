@@ -64,6 +64,7 @@ builder.Services.AddEcho().AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgr
     .AddTikHubAI().AddWellSaid().AddYollomi()
     .AddCommonstack().AddLeonardo().AddNeuphonic()
     .AddBaseAPI().AddByteSpace().AddCAMBAI()
+    .AddAIBramha().AddReve().AddAddisAI()
     .AddStreaikHeaderAuth().AddStreaikReferences();
 if (builder.Configuration.GetValue<bool>("Providers:edgespeak:Enabled")) builder.Services.AddEdgeSpeak();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))
