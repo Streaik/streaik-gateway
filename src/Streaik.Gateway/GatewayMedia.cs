@@ -133,7 +133,8 @@ public static partial class StreaikGateway
     {
         var request = await ReadAsync<ImageRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
-        if (call.ProviderId is not ("ideogram" or "segmind")) Need(request.Prompt, "prompt");
+        if (call.ProviderId is not ("ideogram" or "segmind")
+            && !(call.ProviderId == "picsart" && call.NativeModel.StartsWith("logo/", StringComparison.Ordinal))) Need(request.Prompt, "prompt");
         var provider = call.Require<IImageProvider>();
         var files = request.Files?.Select(ImageReference).ToArray();
         if (request.Mask is not null && files is not { Length: > 0 }) throw new ContractException("A mask requires an image.");

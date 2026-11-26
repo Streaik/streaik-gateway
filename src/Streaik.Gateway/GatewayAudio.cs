@@ -79,7 +79,7 @@ public static partial class StreaikGateway
             buffer.Write(chunk, 0, length);
         }
         var metadata = (upstream as SpeechProviderResponse)?.ProviderMetadata;
-        var format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" or "bineric" or "stabilityai" or "cambai" or "addisai"
+        var format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" or "bineric" or "stabilityai" or "cambai" or "addisai" or "murfai"
             ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type);
         if (call.ProviderId is "rime" or "neuphonic" && metadata?.TryGetValue(call.ProviderId, out var native) == true
             && native.ValueKind == JsonValueKind.Object && native.TryGetProperty("audioFormat", out var nativeFormat)

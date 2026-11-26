@@ -56,7 +56,8 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool arkRouteBergetAstica = false, bool bastionTensorUnreal = false, bool aichixiaEdgeSpeakIsaacus = false,
         bool abliterationAIMagicxSpeechmatics = false, bool dandoloBinericAstria = false, bool asiOneRimeStabilityAI = false,
         bool avianFishAudioLumaAI = false, bool augureCognitivessAIHorde = false, bool tikHubAIWellSaidYollomi = false,
-        bool commonstackLeonardoNeuphonic = false, bool baseApiByteSpaceCambai = false, bool aiBramhaReveAddisAI = false)
+        bool commonstackLeonardoNeuphonic = false, bool baseApiByteSpaceCambai = false, bool aiBramhaReveAddisAI = false,
+        bool antimatterMurfAIPicsart = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -97,6 +98,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (commonstackLeonardoNeuphonic) builder.Services.AddCommonstack().AddLeonardo().AddNeuphonic();
         if (baseApiByteSpaceCambai) builder.Services.AddBaseAPI().AddByteSpace().AddCAMBAI();
         if (aiBramhaReveAddisAI) builder.Services.AddAIBramha().AddReve().AddAddisAI();
+        if (antimatterMurfAIPicsart) builder.Services.AddAntimatter().AddMurfAI().AddPicsart();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -133,6 +135,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (commonstackLeonardoNeuphonic) ids.AddRange(["commonstack", "leonardo", "leonardo-assets", "neuphonic"]);
         if (baseApiByteSpaceCambai) ids.AddRange(["baseapi", "bytespace", "cambai", "cambai-assets"]);
         if (aiBramhaReveAddisAI) ids.AddRange(["aibramha", "reve", "addisai"]);
+        if (antimatterMurfAIPicsart) ids.AddRange(["antimatter", "murfai", "picsart"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));
