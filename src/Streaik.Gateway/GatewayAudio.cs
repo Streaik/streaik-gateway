@@ -78,10 +78,16 @@ public static partial class StreaikGateway
             if (buffer.Length + length > MaxMediaBytes) throw new IOException("Audio output is too large.");
             buffer.Write(chunk, 0, length);
         }
+        var metadata = (upstream as SpeechProviderResponse)?.ProviderMetadata;
+        var format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" or "bineric" or "stabilityai"
+            ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type);
+        if (call.ProviderId == "rime" && metadata?.TryGetValue("rime", out var rime) == true
+            && rime.ValueKind == JsonValueKind.Object && rime.TryGetProperty("audioFormat", out var nativeFormat)
+            && nativeFormat.ValueKind == JsonValueKind.String)
+            format = nativeFormat.GetString() ?? format;
         await context.Response.WriteAsJsonAsync(new SpeechResponse { Audio = new() {
-            Base64 = Convert.ToBase64String(buffer.GetBuffer(), 0, (int)buffer.Length), MimeType = type,
-            Format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" or "bineric" ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type) },
-            ProviderMetadata = (upstream as SpeechProviderResponse)?.ProviderMetadata,
+            Base64 = Convert.ToBase64String(buffer.GetBuffer(), 0, (int)buffer.Length), MimeType = type, Format = format },
+            ProviderMetadata = metadata,
             Response = new() { ModelId = call.Model, Timestamp = DateTime.UtcNow } }, Web, call.Ct);
     }
 
@@ -121,7 +127,7 @@ public static partial class StreaikGateway
     }
 
     private static Dictionary<string, JsonElement>? SpeechOptions(GatewayCall call, Dictionary<string, JsonElement>? options)
-        => call.ProviderId is "async" or "edgespeak" or "speechmatics" || call.Get<IStreamingSpeechProvider>() is not null
+        => call.ProviderId is "async" or "edgespeak" or "speechmatics" or "rime" || call.Get<IStreamingSpeechProvider>() is not null
             ? SelectedOptions(call, options, "model", "input", "response_format", "stream_format", "stream")
             : SelectedOptions(call, options, "model", "input", "voice", "response_format", "stream_format");
 
