@@ -18,7 +18,8 @@ internal static partial class VercelAdapter
         "authorization", "api_key", "apiKey", "x-api-key", "headers", "anthropic-version", "anthropic-beta", "anthropic"
     };
 
-    private static MessagesRequest MessagesRequestFrom(GatewayCall call, ChatRequest request, bool viaChat = false, HostedToolDefinition[]? hosted = null)
+    private static MessagesRequest MessagesRequestFrom(GatewayCall call, ChatRequest request, bool viaChat = false, HostedToolDefinition[]? hosted = null,
+        IReadOnlyDictionary<string, HostedMcpChatApproval.Result>? hostedReplay = null)
     {
         if (request.ResponseFormat is not null || request.Verbosity is not null || request.MaxToolCalls is not null)
             throw new ContractException("This Vercel option has no Messages translation.");
@@ -45,6 +46,13 @@ internal static partial class VercelAdapter
                     case ReasoningUIPart reasoning when message.Role == Role.assistant:
                         if (ReplayPart<MessageContentBlock>(reasoning.ProviderMetadata, call.ProviderId, NativeBlock, MessagesJson.Default)
                             is { Type: "thinking" or "redacted_thinking" } block) history.Add("assistant", block);
+                        break;
+                    case ToolInvocationPart tool when HostedMcpChatApproval.IsContinuation(tool):
+                        if (hostedReplay?.GetValueOrDefault(tool.ToolCallId) is { Items: [ResponseFunctionCallItem approved, ResponseFunctionCallOutputItem approvedOutput] } replay)
+                        {
+                            history.Tool(approved.CallId, approved.Name, MessagesHistory.ParseArguments(approved.Arguments));
+                            results.Add((approved.CallId, new MessagesContent(approvedOutput.Output), replay.Denied));
+                        }
                         break;
                     case ToolInvocationPart tool when UpstreamMcpReview.IsReview(tool):
                         if (message.Role != Role.assistant || hosted is not { Length: > 0 } || !seenReviews.Add(tool.ToolCallId)
@@ -201,9 +209,9 @@ internal static partial class VercelAdapter
     }
 
     private static async IAsyncEnumerable<UIMessagePart> HostedMessageParts(GatewayCall call, IReadOnlyList<MessageStreamPart> events,
-        IReadOnlyList<IReadOnlyList<MessageStreamPart>> earlierMcp, UpstreamMcpReview.Result? review, bool stepStarted)
+        IReadOnlyList<IReadOnlyList<MessageStreamPart>> earlierMcp, IReadOnlyList<UIMessagePart>? approval, bool stepStarted)
     {
-        HashSet<int> hidden = review is null ? [] : events.Where(part => part.Index.HasValue && part.ContentBlock is { Type: "tool_use" } block
+        HashSet<int> hidden = approval is null ? [] : events.Where(part => part.Index.HasValue && part.ContentBlock is { Type: "tool_use" } block
             && GatewayHostedTools.IsReserved(block.Name)).Select(part => part.Index!.Value).ToHashSet();
         static async IAsyncEnumerable<MessageStreamPart> Replay(IEnumerable<MessageStreamPart> parts)
         {
@@ -217,8 +225,8 @@ internal static partial class VercelAdapter
         var visible = events.Where(part => part.Index is not { } index || !hidden.Contains(index));
         await foreach (var part in MessageParts(call, Replay(visible), stepStarted, listings))
         {
-            if (part is FinishUIPart && review is not null)
-                foreach (var reviewPart in UpstreamMcpReview.Parts(review)) yield return reviewPart;
+            if (part is FinishUIPart && approval is not null)
+                foreach (var approvalPart in approval) yield return approvalPart;
             yield return part;
         }
     }

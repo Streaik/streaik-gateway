@@ -39,7 +39,7 @@ internal sealed class GatewayReferences(GatewayCall call, string purpose)
         { throw new ContractException("Invalid or expired reference.", 404); }
     }
 
-    private static string CallerBinding(GatewayCall call)
+    internal static string CallerBinding(GatewayCall call)
     {
         var resolver = call.Context.RequestServices.GetService<IProviderCredentials>();
         var local = call.Get<ILocalFixtureProvider>() is not null;

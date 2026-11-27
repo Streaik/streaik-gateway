@@ -21,6 +21,8 @@ internal static class ProviderMcpApproval
     {
         var server = servers?.SingleOrDefault(descriptor => descriptor.ServerLabel == item.ServerLabel);
         if (server is null) return null;
+        if (server.RequireApproval is McpApprovalPolicy.Never)
+            throw new ContractException("The provider requested approval for an MCP server with approval disabled.", 502);
         if (chat.Id is not { Length: > 0 and <= 256 } chatId || item.Id is not { Length: > 0 and <= 256 } id
             || item.Name is not { Length: > 0 and <= 256 } name || item.Arguments is { Length: > 65536 })
             throw new ContractException("Invalid provider MCP approval context.", 422);

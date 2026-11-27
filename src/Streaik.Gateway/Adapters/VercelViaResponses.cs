@@ -13,7 +13,8 @@ internal static partial class VercelAdapter
     private const string EncryptedReasoningInclude = "reasoning.encrypted_content";
 
     private static async Task<ResponseRequest> ResponseRequestFromAsync(GatewayCall call, ChatRequest request,
-        HostedToolDefinition[]? hosted = null, McpToolDefinition[]? providerMcp = null)
+        HostedToolDefinition[]? hosted = null, McpToolDefinition[]? providerMcp = null,
+        IReadOnlyDictionary<string, HostedMcpChatApproval.Result>? hostedReplay = null)
     {
         // An explicit OpenAI include array is authoritative, including an empty opt-out.
         var include = Option(request, call.ProviderId, "include") is { ValueKind: JsonValueKind.Array } value
@@ -64,6 +65,9 @@ internal static partial class VercelAdapter
                         // A decision belongs only to the active assistant turn, not ordinary conversation history.
                         if (ReferenceEquals(message, request.Messages.LastOrDefault()) && seen.Add(tool.ToolCallId))
                             input.AddRange(ProviderMcpApproval.Resolve(call, request, providerMcp, tool));
+                        break;
+                    case ToolInvocationPart tool when HostedMcpChatApproval.IsContinuation(tool):
+                        if (hostedReplay?.GetValueOrDefault(tool.ToolCallId) is { } completed) input.AddRange(completed.Items);
                         break;
                     case ToolInvocationPart tool when UpstreamMcpReview.IsReview(tool):
                         if (message.Role != Role.assistant || !seen.Add(tool.ToolCallId)
@@ -254,7 +258,7 @@ internal static partial class VercelAdapter
     private static async IAsyncEnumerable<UIMessagePart> ResponseParts(GatewayCall call,
         IAsyncEnumerable<ResponseStreamPart> source, GatewayContainerArtifacts.Turn artifacts, bool includeEncryptedReasoning,
         Func<ResponseMcpApprovalRequestItem, Task<IReadOnlyList<UIMessagePart>>>? convertReview = null,
-         UpstreamMcpReview.Result? hostedReview = null, bool stepStarted = false)
+         IReadOnlyList<UIMessagePart>? hostedApproval = null, bool stepStarted = false)
     {
         var text = new HashSet<(string Item, int Index)>();
         var reasoning = new HashSet<string>(StringComparer.Ordinal);
@@ -424,13 +428,13 @@ internal static partial class VercelAdapter
                 yield return new ToolOutputAvailablePart { ToolCallId = artifact.Id, Output = artifact.Output,
                     ProviderExecuted = true, Dynamic = true };
             }
-            if (hostedReview is not null)
-                foreach (var reviewPart in UpstreamMcpReview.Parts(hostedReview)) yield return reviewPart;
+            if (hostedApproval is not null)
+                foreach (var approvalPart in hostedApproval) yield return approvalPart;
             var usage = result.NormalizedUsage;
             var filtered = result.IncompleteDetails is { ValueKind: JsonValueKind.Object } details
                 && details.TryGetProperty("reason", out var reason) && reason.GetString() == "content_filter";
             yield return Finish(call, refusal || filtered ? "content-filter" : result.Status == "incomplete" ? "length"
-                : sentCalls.Count > 0 || hostedReview is not null ? "tool-calls" : "stop", usage?.InputTokens, usage?.OutputTokens, call.ProviderId,
+                : sentCalls.Count > 0 || hostedApproval is not null ? "tool-calls" : "stop", usage?.InputTokens, usage?.OutputTokens, call.ProviderId,
                 result.Usage, result.AdditionalProperties, result.CreatedAt,
                 GatewayPricing.Cost(result) ?? await GatewayPricing.EstimateAsync(call, result.Model, result.Usage));
             yield break;

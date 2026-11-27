@@ -422,7 +422,7 @@ public sealed class HostedToolTests
         var wire = await GatewayTests.Success(first);
         Assert.DoesNotContain("mcp-only", wire);
         var call = GatewayTests.Part(wire, "tool-input-available");
-        Assert.Equal("streaik_mcp_execution_approval", (string?)call["toolName"]);
+        Assert.Equal("streaik_hosted_mcp_approval", (string?)call["toolName"]);
         var approval = GatewayTests.Part(wire, "tool-approval-request");
         Assert.Null(approval["approvalDescriptor"]!["output"]);
         var decision = new JsonObject
@@ -731,12 +731,15 @@ public sealed class HostedToolTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Explicit_hosted_API_Chat_review_uses_client_output_and_does_not_redispatch(bool approve)
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task Hosted_API_Chat_resumes_across_instances_and_replays_results_without_execution(bool approve, bool signed)
     {
         var invoked = 0;
-        await using var host = await FixtureHost.StartAsync(request =>
+        var authorized = true;
+        Task<FixtureHost> Start() => FixtureHost.StartAsync(request =>
         {
             if (request.Body!["input"]!.AsArray().Any(item => (string?)item?["type"] == "function_call_output"))
                 return FixtureHost.Reply(request);
@@ -746,10 +749,13 @@ public sealed class HostedToolTests
         }, services =>
         {
             services.AddStreaikHostedTools();
+            if (signed) services.AddSingleton(new Streaik.Vercel.Security.ToolApprovalSigner("local-test-signing-key"));
             services.AddSingleton(new HostedToolAccess((label, url, _, _) => ValueTask.FromResult(
-                label == "inventory" && url == Endpoint ? new McpEndpointAccess { ToolNames = new HashSet<string> { "lookup" } } : null),
+                authorized && label == "inventory" && url == Endpoint ? new McpEndpointAccess { ToolNames = new HashSet<string> { "lookup" } } : null),
                 CreateMcpHandler: _ => new McpFixture(() => invoked++)));
         });
+        await using var host = await Start();
+        await using var resumeHost = await Start();
         var request = JsonNode.Parse("""
             {"model":"openai/test","id":"chat-review","messages":[{"id":"u","role":"user","parts":[{"type":"text","text":"Poland"}]}],
               "tools":[{"name":"mcp","inputSchema":{"type":"object","mcp":{"server_label":"inventory",
@@ -760,41 +766,71 @@ public sealed class HostedToolTests
         var call = GatewayTests.Part(wire, "tool-input-available");
         var approval = GatewayTests.Part(wire, "tool-approval-request");
         Assert.True((bool?)call["providerExecuted"]);
-        Assert.Equal("Poland", (string?)approval["approvalDescriptor"]!["input"]!["country"]);
-        Assert.Equal("Found", (string?)approval["approvalDescriptor"]!["output"]!["content"]![0]!["text"]);
+        Assert.Equal("Poland", (string?)call["input"]!["country"]);
+        Assert.Null(approval["approvalDescriptor"]!["output"]);
+        Assert.Equal(signed, approval["signature"] is not null);
+        Assert.DoesNotContain("tool-output-available", wire);
         Assert.DoesNotContain("Found", host.Requests.Single().Body!.ToJsonString());
-        Assert.Equal(1, invoked);
+        Assert.Equal(0, invoked);
 
-        var decision = new JsonObject
-        {
-            ["type"] = "dynamic-tool", ["toolName"] = "streaik_mcp_result_review", ["toolCallId"] = call["toolCallId"]!.DeepClone(),
-            ["providerExecuted"] = true, ["input"] = call["input"]!.DeepClone(), ["output"] = "client-selected result",
-            ["state"] = approve ? "output-available" : "approval-responded",
-            ["approval"] = new JsonObject { ["id"] = approval["approvalId"]!.DeepClone(), ["approved"] = approve }
-        };
+        var decision = HostedDecision(call, approval, approve);
+        decision["output"] = "client-selected result";
         request["messages"]!.AsArray().Add(new JsonObject { ["id"] = "a", ["role"] = "assistant", ["parts"] = new JsonArray(decision) });
-        using var wrongCaller = await host.PostAsync("/api/chat", request.ToJsonString(), (Key.Name, "different-credential"));
-        Assert.Equal(HttpStatusCode.Forbidden, wrongCaller.StatusCode);
+        if (signed)
+        {
+            using var wrongCaller = await resumeHost.PostAsync("/api/chat", request.ToJsonString(), (Key.Name, "different-credential"));
+            Assert.False(wrongCaller.IsSuccessStatusCode);
+            decision["input"]!["country"] = "tampered";
+            using var tampered = await resumeHost.PostAsync("/api/chat", request.ToJsonString(), Key);
+            Assert.False(tampered.IsSuccessStatusCode);
+            decision["input"] = call["input"]!.DeepClone();
+            decision["approval"]!.AsObject().Remove("signature");
+            using var unsigned = await resumeHost.PostAsync("/api/chat", request.ToJsonString(), Key);
+            Assert.False(unsigned.IsSuccessStatusCode);
+            decision["approval"]!["signature"] = approval["signature"]!.DeepClone();
+        }
         if (approve)
         {
-            decision.Remove("output");
-            using var missing = await host.PostAsync("/api/chat", request.ToJsonString(), Key);
-            Assert.Equal(HttpStatusCode.Forbidden, missing.StatusCode);
-            decision["output"] = "client-selected result";
+            authorized = false;
+            using var denied = await resumeHost.PostAsync("/api/chat", request.ToJsonString(), Key);
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+            authorized = true;
         }
-        using var resumed = await host.PostAsync("/api/chat", request.ToJsonString(), Key);
-        Assert.True(resumed.IsSuccessStatusCode, await resumed.Content.ReadAsStringAsync());
-        var input = host.Requests.Last().Body!["input"]!.AsArray();
+        Assert.Equal(0, invoked);
+        using var resumed = await resumeHost.PostAsync("/api/chat", request.ToJsonString(), Key);
+        var completed = await GatewayTests.Success(resumed);
+        var input = resumeHost.Requests.Last().Body!["input"]!.AsArray();
         var forwarded = Assert.Single(input, item => (string?)item?["type"] == "function_call_output")!;
-        Assert.Equal(approve ? "client-selected result" : "The user chose not to disclose the tool result.", (string?)forwarded["output"]);
-        Assert.DoesNotContain("Found", input.ToJsonString());
-        Assert.Equal(1, invoked);
+        if (approve) Assert.Contains("Found", (string?)forwarded["output"]);
+        else Assert.Equal("The user declined to run the MCP tool.", (string?)forwarded["output"]);
+        Assert.DoesNotContain("client-selected result", input.ToJsonString());
+        Assert.Equal(approve ? 1 : 0, invoked);
+        var receipt = GatewayTests.Part(completed, "tool-input-available");
+        Assert.Equal("streaik_hosted_mcp_result", (string?)receipt["toolName"]);
+        receipt["type"] = "dynamic-tool";
+        receipt["state"] = "output-available";
+        receipt["output"] = GatewayTests.Part(completed, "tool-output-available")["output"]!.DeepClone();
+        decision.Parent!.AsArray().Add(receipt);
+        request["messages"]!.AsArray().Add(JsonNode.Parse("""{"id":"u2","role":"user","parts":[{"type":"text","text":"Continue"}]}"""));
+        using var next = await host.PostAsync("/api/chat", request.ToJsonString(), Key);
+        await GatewayTests.Success(next);
+        Assert.Contains(host.Requests.Last().Body!["input"]!.AsArray(), item => (string?)item?["type"] == "function_call_output");
+        Assert.Equal(approve ? 1 : 0, invoked);
     }
+
+    private static JsonObject HostedDecision(JsonNode call, JsonNode approval, bool approved) => new()
+    {
+        ["type"] = "dynamic-tool", ["toolName"] = call["toolName"]!.DeepClone(), ["toolCallId"] = call["toolCallId"]!.DeepClone(),
+        ["state"] = "approval-responded", ["providerExecuted"] = true, ["input"] = call["input"]!.DeepClone(),
+        ["toolMetadata"] = call["toolMetadata"]!.DeepClone(),
+        ["approval"] = new JsonObject { ["id"] = approval["approvalId"]!.DeepClone(), ["approved"] = approved,
+            ["signature"] = approval["signature"]?.DeepClone() }
+    };
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Converted_API_Chat_approval_shows_input_and_output_and_never_reexecutes(bool approve)
+    public async Task Converted_API_Chat_approval_only_dispatches_after_permission(bool approve)
     {
         var invoked = 0;
         var rounds = 0;
@@ -819,22 +855,20 @@ public sealed class HostedToolTests
         Assert.True(first.IsSuccessStatusCode, sse);
         var approvalEvent = sse.Split('\n').Where(line => line.StartsWith("data: {", StringComparison.Ordinal)).Select(line => JsonNode.Parse(line[6..])!)
             .Single(part => (string?)part["type"] == "tool-approval-request");
-        Assert.Equal("A-1", (string?)approvalEvent["approvalDescriptor"]!["input"]!["sku"]);
-        Assert.Equal("Found", (string?)approvalEvent["approvalDescriptor"]!["output"]!["content"]![0]!["text"]);
-        Assert.Equal(1, invoked);
-        var id = (string?)approvalEvent["approvalId"];
-        var messages = JsonSerializer.Serialize(new[] { new { id = "assistant", role = "assistant", parts = new[] { new
-        {
-            type = "dynamic-tool", toolName = "streaik_mcp_result_review", toolCallId = id, providerExecuted = true,
-            state = "approval-responded", input = new { sku = "A-1" }, output = "client-selected result", approval = new { id, approved = approve }
-        } } } });
+        Assert.Equal("A-1", (string?)GatewayTests.Part(sse, "tool-input-available")["input"]!["sku"]);
+        Assert.Null(approvalEvent["approvalDescriptor"]!["output"]);
+        Assert.Equal(0, invoked);
+        var decision = HostedDecision(GatewayTests.Part(sse, "tool-input-available"), approvalEvent, approve);
+        decision["output"] = "client-selected result";
+        var messages = JsonSerializer.Serialize(new[] { new { id = "assistant", role = "assistant", parts = new[] { decision } } });
         using var resumed = await host.PostAsync("/api/chat", $$"""{"model":"openai/test","id":"chat-1","messages":[{{user}},{{messages[1..^1]}}],{{provider}}}""", Key);
         Assert.True(resumed.IsSuccessStatusCode, await resumed.Content.ReadAsStringAsync());
         var replay = Assert.Single(host.Requests.Last().Body!["input"]!.AsArray(), item => (string?)item?["type"] == "mcp_call")!;
         Assert.Equal("mcp_call", (string?)replay["type"]);
         var forwarded = replay["output"]?.GetValue<string>();
-        Assert.Equal(approve ? "client-selected result" : null, forwarded);
-        Assert.Equal(1, invoked);
+        if (approve) Assert.Contains("Found", forwarded);
+        else Assert.Null(forwarded);
+        Assert.Equal(approve ? 1 : 0, invoked);
     }
 
     private static void Identify(WebApplication app) => app.Use(async (context, next) =>

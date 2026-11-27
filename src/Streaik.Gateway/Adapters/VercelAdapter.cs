@@ -27,6 +27,7 @@ internal static partial class VercelAdapter
         var signer = services.GetService<ToolApprovalSigner>();
         var converted = request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>().Any(UpstreamMcpReview.IsReview);
         var upstreamReviews = services.GetService<HostedToolsEnabled>() is not null;
+        var hostedApproval = new HostedMcpChatApproval(call, request, hosted, providerMcp, Option(request, call.ProviderId, "tools"), signer, upstreamReviews);
         var nativeResponses = (!call.PreferChatBridge || providerMcp is { Length: > 0 }) && call.Get<IResponsesProvider>() is not null;
         var messagesMcp = !nativeResponses && providerMcp is { Length: > 0 } && call.ProviderId == "anthropic" && call.Get<IMessagesProvider>() is not null;
         if (providerMcp is { Length: > 0 } && !nativeResponses && !messagesMcp)
@@ -35,8 +36,12 @@ internal static partial class VercelAdapter
             throw new ContractException("This route cannot continue the MCP result review.", 422);
         var reviews = request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>()
             .Where(tool => tool.Approval is not null || tool.State is "approval-requested" or "approval-responded").ToList();
-        if (reviews.Any(tool => tool.ProviderExecuted == true && !UpstreamMcpReview.IsReview(tool) && !ProviderMcpApproval.IsApproval(tool)))
-            throw new ContractException("API Chat only accepts client tool result approvals.");
+        if (reviews.Any(tool => tool.ProviderExecuted == true && !UpstreamMcpReview.IsReview(tool) && !ProviderMcpApproval.IsApproval(tool)
+            && !HostedMcpChatApproval.IsApproval(tool)))
+            throw new ContractException("API Chat does not accept this type of tool approval.");
+        if (request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>().Any(HostedMcpChatApproval.IsContinuation)
+            && !nativeResponses && hosted is not { Length: > 0 })
+            throw new ContractException("This route cannot continue the hosted MCP execution approval.", 422);
         if (!nativeResponses && reviews.Any(ProviderMcpApproval.IsApproval))
             throw new ContractException("This route cannot continue provider MCP execution approval.", 422);
         // A registered, user-bound signer can be unavailable for requests without a subject.
@@ -44,9 +49,10 @@ internal static partial class VercelAdapter
         var signingUnavailable = signer is null
             && services.GetService<IServiceProviderIsService>()?.IsService(typeof(ToolApprovalSigner)) == true;
         if (signingUnavailable && (request.Tools?.Count > 0 || reviews.Count != 0 || HasNativeClientTools(call, request)
-            || hosted?.OfType<McpToolDefinition>().Any(tool => tool.RequireApproval is McpApprovalPolicy.Always) == true))
+            || hosted?.OfType<McpToolDefinition>().Any(tool => tool.RequireApproval is not McpApprovalPolicy.Never) == true))
             throw new ContractException("Tool approval signing is unavailable for this request.");
-        try { signer?.ValidateIncoming(request.Messages); }
+        try { signer?.ValidateIncoming(request.Messages.Select(message => new UIMessage { Id = message.Id, Role = message.Role,
+            Parts = message.Parts.Where(part => part is not ToolInvocationPart tool || !HostedMcpChatApproval.IsContinuation(tool)).ToList() })); }
         catch (ToolApprovalSignatureException error) { throw new ContractException(error.Message); }
 
         // Hosted activity describes an already-completed host round; never trust it as inference history.
@@ -54,25 +60,34 @@ internal static partial class VercelAdapter
             message.Parts.RemoveAll(part => part is ToolInvocationPart { ProviderExecuted: true, Approval: null } tool
                 && tool.ToolMetadata?.GetValueOrDefault(HostedToolActivity.UiMetadataKey).ValueKind == JsonValueKind.True);
 
+        Dictionary<string, HostedMcpChatApproval.Result> hostedReplay;
+        try { hostedReplay = await hostedApproval.ResolveAsync(); }
+        catch (ToolApprovalSignatureException error) { throw new ContractException(error.Message); }
+
         Func<Streaik.Responses.ResponseMcpApprovalRequestItem, Task<IReadOnlyList<UIMessagePart>>>? ConvertReview(
             Streaik.Responses.ResponseRequest native) => nativeResponses && !signingUnavailable && (upstreamReviews || providerMcp is { Length: > 0 })
-            ? item => ProviderMcpApproval.Create(call, request, providerMcp, item) is { } parts
-                ? Task.FromResult(parts)
-                : upstreamReviews ? UpstreamMcpReview.CreateAsync(call, request, native.Tools, item)
-                : throw new ContractException("This provider tool requires execution approval, which is unavailable on this route.", 422)
+            ? item => Task.FromResult(hostedApproval.Issue(item))
             : null;
 
         IAsyncEnumerable<UIMessagePart> WithApprovals(IAsyncEnumerable<UIMessagePart> parts)
         {
-            parts = ReviewClientResults(parts, signingUnavailable, call.Ct);
+            parts = RequestClientToolApprovals(parts, signingUnavailable, call.Ct);
             return signer is null ? parts : signer.SignOutgoing(parts, call.Ct);
+        }
+
+        async Task<bool> WriteApprovedActivity(Func<UIMessagePart, Task> write)
+        {
+            if (hostedApproval.CompletedParts.Count == 0) return false;
+            await write(new StartStepUIPart());
+            foreach (var part in hostedApproval.CompletedParts) await write(part);
+            return true;
         }
 
         IAsyncEnumerable<UIMessagePart> stream;
         if (hosted is { Length: > 0 } && call.ProviderId == "anthropic" && !call.PreferChatBridge
             && !nativeResponses && call.Get<IMessagesProvider>() is { } anthropic)
         {
-            var native = MessagesRequestFrom(call, request, hosted: hosted);
+            var native = MessagesRequestFrom(call, request, hosted: hosted, hostedReplay: hostedReplay);
             var headers = MessagesHeaders(call, request);
             if (MessagesMcp.WireTools(native).Any(tool => tool.ValueKind == JsonValueKind.Object
                 && tool.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String && GatewayHostedTools.IsReserved(name.GetString())))
@@ -100,20 +115,21 @@ internal static partial class VercelAdapter
                     if (!started) { await write(new StartStepUIPart()); started = true; }
                     await write(HostedActivityPart(activity));
                 }
-                var handled = await GatewayHostedTools.RunAsync(call, round, hosted, request, Observe, readRound: async next =>
+                started = await WriteApprovedActivity(write);
+                var handled = await GatewayHostedTools.RunAsync(call, round, hosted, hostedApproval, Observe, readRound: async next =>
                 {
                     if (McpActivityEvents(events) is { Length: > 0 } activity) earlierMcp.Add(activity);
                     ProtocolAdapters.PrepareHostedChatRound(native, history, system, tools, next);
                     return await ProtocolAdapters.ReadHostedMessagesRoundAsync(call, anthropic, native, headers, messagesMcp,
                         captureChat: parts => events = parts);
                 });
-                return WithApprovals(HostedMessageParts(call, events, earlierMcp, handled.Review, started));
+                return WithApprovals(HostedMessageParts(call, events, earlierMcp, handled.Approval, started));
             });
             return;
         }
         else if (hosted is { Length: > 0 })
         {
-            var native = await ResponseRequestFromAsync(call, request, hosted, providerMcp);
+            var native = await ResponseRequestFromAsync(call, request, hosted, providerMcp, hostedReplay);
             if (native.AdditionalProperties?.ContainsKey(GatewayContainerArtifacts.ReplayKey) == true)
                 throw new ContractException("Hosted tools cannot be combined with container artifact continuation.", 422);
             await call.WriteVercelStreamAsync(async write =>
@@ -124,17 +140,28 @@ internal static partial class VercelAdapter
                     if (!started) { await write(new StartStepUIPart()); started = true; }
                     await write(HostedActivityPart(activity));
                 }
-                var handled = await GatewayHostedTools.RunAsync(call, native, hosted, request, Observe);
+                started = await WriteApprovedActivity(write);
+                var handled = await GatewayHostedTools.RunAsync(call, native, hosted, hostedApproval, Observe);
                 return WithApprovals(ResponseParts(call, GatewayHostedTools.Events(handled.Events, call.Ct), new GatewayContainerArtifacts.Turn(call),
-                    native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), handled.Review, started));
+                    native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), handled.Approval, started));
             });
             return;
         }
         else if (nativeResponses && call.Get<IResponsesProvider>() is { } responses)
         {
-            var native = await ResponseRequestFromAsync(call, request, providerMcp: providerMcp);
+            var native = await ResponseRequestFromAsync(call, request, providerMcp: providerMcp, hostedReplay: hostedReplay);
             await GatewayContainerArtifacts.PrepareAsync(call, native);
             var artifacts = new GatewayContainerArtifacts.Turn(call);
+            if (hostedApproval.CompletedParts.Count > 0)
+            {
+                await call.WriteVercelStreamAsync(async write =>
+                {
+                    await WriteApprovedActivity(write);
+                    return WithApprovals(ResponseParts(call, responses.StreamResponseAsync(native, call.Headers, call.Ct), artifacts,
+                        native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), stepStarted: true));
+                });
+                return;
+            }
             stream = ResponseParts(call, responses.StreamResponseAsync(native, call.Headers, call.Ct), artifacts,
                 native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native));
         }
@@ -204,7 +231,7 @@ internal static partial class VercelAdapter
         return false;
     }
 
-    private static async IAsyncEnumerable<UIMessagePart> ReviewClientResults(IAsyncEnumerable<UIMessagePart> stream,
+    private static async IAsyncEnumerable<UIMessagePart> RequestClientToolApprovals(IAsyncEnumerable<UIMessagePart> stream,
         bool signingUnavailable, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var reviewed = new HashSet<string>(StringComparer.Ordinal);
@@ -281,11 +308,11 @@ internal static partial class VercelAdapter
     // Never read or translate any submitted output on the denial path.
     private static (string Output, bool IsError) ClientToolResult(ToolInvocationPart tool)
     {
-        const string required = "Client function calls require an approved result before continuing.";
+        const string required = "Client function calls require execution approval and a result before continuing.";
         if (tool.Approval is not { } approval || string.IsNullOrWhiteSpace(approval.Id))
             throw new ContractException(required);
         if (approval.Approved == false && tool.State is "approval-responded" or "output-denied")
-            return ("The user declined to share this tool result.", true);
+            return ("The user declined to run this tool.", true);
         if (approval.Approved != true
             || tool.State is not ("output-available" or "output-error" or "approval-responded")
             || (tool.Output is null && tool.ErrorText is null))

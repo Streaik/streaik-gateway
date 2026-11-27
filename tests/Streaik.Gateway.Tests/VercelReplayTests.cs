@@ -304,7 +304,7 @@ public sealed class VercelReplayTests
         else
         {
             Assert.DoesNotContain(output, upstream);
-            Assert.Contains("The user declined to share this tool result.", upstream);
+            Assert.Contains("The user declined to run this tool.", upstream);
         }
 
         var decisionForReplay = reviewed["approval"]!.DeepClone();
