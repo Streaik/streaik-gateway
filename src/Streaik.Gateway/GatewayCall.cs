@@ -114,7 +114,7 @@ internal sealed class GatewayCall
 
     public async Task WriteResponsesStreamAsync(IAsyncEnumerable<ResponseStreamPart> source, GatewayContainerArtifacts.Turn? artifacts = null)
     {
-        BeginStream();
+        if (!Context.Response.HasStarted) BeginStream();
         var performance = Measure();
         await foreach (var part in source.WithCancellation(Ct))
         {
@@ -210,13 +210,24 @@ internal sealed class GatewayCall
         }
     }
 
-    public async Task WriteVercelStreamAsync(IAsyncEnumerable<UIMessagePart> source)
+    internal Task WriteHostedActivityAsync(Streaik.Tools.HostedToolActivity activity)
+    {
+        if (!Context.Response.HasStarted) BeginStream();
+        const string type = Streaik.Tools.HostedToolActivity.ResponsesEvent;
+        return WriteFrameAsync(Context.Response, JsonSerializer.Serialize(new { type, activity }, JsonSerializerOptions.Web), type, Ct);
+    }
+
+    public Task WriteVercelStreamAsync(IAsyncEnumerable<UIMessagePart> source) => WriteVercelStreamAsync(_ => Task.FromResult(source));
+
+    internal async Task WriteVercelStreamAsync(Func<Func<UIMessagePart, Task>, Task<IAsyncEnumerable<UIMessagePart>>> prepare)
     {
         BeginStream();
         Context.Response.Headers["x-vercel-ai-ui-message-stream"] = "v1";
         var performance = Measure();
-        await foreach (var part in source.WithCancellation(Ct))
-            await WriteFrameAsync(Context.Response, JsonSerializer.Serialize(performance.Observe(part), JsonSerializerOptions.Web), null, Ct);
+        Task Write(UIMessagePart part) => WriteFrameAsync(Context.Response,
+            JsonSerializer.Serialize(performance.Observe(part), JsonSerializerOptions.Web), null, Ct);
+        var source = await prepare(Write);
+        await foreach (var part in source.WithCancellation(Ct)) await Write(part);
         await WriteFrameAsync(Context.Response, "[DONE]", null, Ct);
     }
 

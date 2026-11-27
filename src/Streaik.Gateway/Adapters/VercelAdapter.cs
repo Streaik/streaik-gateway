@@ -43,9 +43,20 @@ internal static partial class VercelAdapter
         try { signer?.ValidateIncoming(request.Messages); }
         catch (ToolApprovalSignatureException error) { throw new ContractException(error.Message); }
 
+        // Hosted activity describes an already-completed host round; never trust it as inference history.
+        foreach (var message in request.Messages.Where(message => message.Role == Role.assistant))
+            message.Parts.RemoveAll(part => part is ToolInvocationPart { ProviderExecuted: true, Approval: null } tool
+                && tool.ToolMetadata?.GetValueOrDefault(HostedToolActivity.UiMetadataKey).ValueKind == JsonValueKind.True);
+
         Func<Streaik.Responses.ResponseMcpApprovalRequestItem, Task<IReadOnlyList<UIMessagePart>>>? ConvertReview(
             Streaik.Responses.ResponseRequest native) => nativeResponses && upstreamReviews is not null && !signingUnavailable
             ? item => UpstreamMcpReview.CreateAsync(upstreamReviews, call, request, native.Tools, item) : null;
+
+        IAsyncEnumerable<UIMessagePart> WithApprovals(IAsyncEnumerable<UIMessagePart> parts)
+        {
+            parts = ReviewClientResults(parts, signingUnavailable, call.Ct);
+            return signer is null ? parts : signer.SignOutgoing(parts, call.Ct);
+        }
 
         IAsyncEnumerable<UIMessagePart> stream;
         if (hosted is { Length: > 0 })
@@ -53,9 +64,19 @@ internal static partial class VercelAdapter
             var native = await ResponseRequestFromAsync(call, request, hosted);
             if (native.AdditionalProperties?.ContainsKey(GatewayContainerArtifacts.ReplayKey) == true)
                 throw new ContractException("Hosted tools cannot be combined with container artifact continuation.", 422);
-            var handled = await GatewayHostedTools.RunAsync(call, native, hosted, request);
-            stream = ResponseParts(call, GatewayHostedTools.Events(handled.Events, call.Ct), new GatewayContainerArtifacts.Turn(call),
-                native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), handled.Review);
+            await call.WriteVercelStreamAsync(async write =>
+            {
+                var started = false;
+                async Task Observe(HostedToolActivity activity)
+                {
+                    if (!started) { await write(new StartStepUIPart()); started = true; }
+                    await write(HostedActivityPart(activity));
+                }
+                var handled = await GatewayHostedTools.RunAsync(call, native, hosted, request, Observe);
+                return WithApprovals(ResponseParts(call, GatewayHostedTools.Events(handled.Events, call.Ct), new GatewayContainerArtifacts.Turn(call),
+                    native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), handled.Review, started));
+            });
+            return;
         }
         else if (!call.PreferChatBridge && call.Get<IResponsesProvider>() is { } responses)
         {
@@ -93,9 +114,16 @@ internal static partial class VercelAdapter
             await GatewayCall.ErrorAsync(call.Context, Protocol.Vercel, 400, "Provider does not support this protocol.");
             return;
         }
-        stream = ReviewClientResults(stream, signingUnavailable, call.Ct);
-        await call.WriteVercelStreamAsync(signer is null ? stream : signer.SignOutgoing(stream, call.Ct));
+        await call.WriteVercelStreamAsync(WithApprovals(stream));
     }
+
+    private static UIMessagePart HostedActivityPart(HostedToolActivity activity) => activity switch
+    {
+        { Error: { } error } => new ToolOutputErrorPart { ToolCallId = activity.CallId, ErrorText = error, ProviderExecuted = true, Dynamic = true },
+        { Output: { } output } => new ToolOutputAvailablePart { ToolCallId = activity.CallId, Output = output, ProviderExecuted = true, Dynamic = true },
+        _ => new ToolCallPart { ToolCallId = activity.CallId, ToolName = activity.Name, Input = activity.Input, ProviderExecuted = true, Dynamic = true,
+            ToolMetadata = new() { [HostedToolActivity.UiMetadataKey] = JsonSerializer.SerializeToElement(true) } }
+    };
 
     private static bool HasNativeClientTools(GatewayCall call, ChatRequest request)
     {

@@ -242,7 +242,8 @@ internal static partial class VercelAdapter
 
     private static async IAsyncEnumerable<UIMessagePart> ResponseParts(GatewayCall call,
         IAsyncEnumerable<ResponseStreamPart> source, GatewayContainerArtifacts.Turn artifacts, bool includeEncryptedReasoning,
-        Func<ResponseMcpApprovalRequestItem, Task<IReadOnlyList<UIMessagePart>>>? convertReview = null, McpResultReviews.Result? hostedReview = null)
+        Func<ResponseMcpApprovalRequestItem, Task<IReadOnlyList<UIMessagePart>>>? convertReview = null,
+        McpResultReviews.Result? hostedReview = null, bool stepStarted = false)
     {
         var text = new HashSet<(string Item, int Index)>();
         var reasoning = new HashSet<string>(StringComparer.Ordinal);
@@ -252,7 +253,7 @@ internal static partial class VercelAdapter
         var hostedSearches = new Queue<string>();
         var hostedCallIds = new HashSet<string>(StringComparer.Ordinal);
         var refusal = false;
-        var step = false;
+        var step = stepStarted;
         string TextId((string Item, int Index) key) => $"{key.Item}/{key.Index}";
         JsonElement Serialize(ResponseInputItem item) => JsonSerializer.SerializeToElement(item, ResponseJson.Default);
 

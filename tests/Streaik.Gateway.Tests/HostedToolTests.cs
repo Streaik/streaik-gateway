@@ -147,6 +147,101 @@ public sealed class HostedToolTests
         Assert.DoesNotContain("tool-approval-request", wire);
         Assert.Equal(allowUnreviewedResults ? 1 : 0, invoked);
         Assert.Equal(allowUnreviewedResults ? 2 : 1, host.Requests.Count);
+        if (allowUnreviewedResults)
+        {
+            var call = GatewayTests.Part(wire, "tool-input-available");
+            var result = GatewayTests.Part(wire, "tool-output-available");
+            Assert.Equal("call_fixture", (string?)call["toolCallId"]);
+            Assert.Equal("call_fixture", (string?)result["toolCallId"]);
+            Assert.StartsWith("streaik_mcp_lookup_", (string?)call["toolName"]);
+            Assert.True((bool?)call["providerExecuted"]);
+            Assert.True((bool?)result["providerExecuted"]);
+            Assert.Equal("Found", (string?)result["output"]!["content"]![0]!["text"]);
+        }
+        else Assert.DoesNotContain("tool-input-available", wire);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Hosted_activity_reaches_the_client_before_the_tool_returns(bool relay, bool fail)
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            if (request.Body!["input"]!.AsArray().Any(item => (string?)item?["type"] == "function_call_output"))
+                return FixtureHost.Reply(request);
+            var name = (string?)Assert.Single(request.Body["tools"]!.AsArray())!["name"];
+            var result = Result(new { type = "function_call", call_id = "call_live", name, arguments = "{\"sku\":\"A-1\"}" });
+            return FixtureHost.Sse($$"""{"type":"response.completed","sequence_number":0,"response":{{result}}}""");
+        }, services =>
+        {
+            services.AddStreaikHostedTools();
+            services.AddSingleton(new HostedToolAccess((label, url, _, _) => ValueTask.FromResult(
+                label == "inventory" && url == Endpoint ? new McpEndpointAccess { ToolNames = new HashSet<string> { "lookup" }, AllowUnreviewedResults = true } : null),
+                CreateMcpHandler: _ => new McpFixture(() => entered.TrySetResult(), async ct =>
+                {
+                    await release.Task.WaitAsync(ct);
+                    if (fail) throw new HttpRequestException("Private downstream failure details");
+                })));
+        });
+        const string body = """
+            {"model":"openai/test","id":"live","messages":[{"id":"u","role":"user","parts":[{"type":"text","text":"hello"}]}],
+             "tools":[{"name":"mcp","inputSchema":{"type":"object","mcp":{"server_label":"inventory","server_url":"https://inventory.example.test/mcp","defer_loading":false,"require_approval":"never"}}}]}
+            """;
+        const string native = """
+            {"model":"openai/test","input":"hello","stream":true,"tools":[{"type":"mcp","name":"mcp",
+              "server_label":"inventory","server_url":"https://inventory.example.test/mcp","defer_loading":false,"require_approval":"never"}]}
+            """;
+        using var request = new HttpRequestMessage(HttpMethod.Post, relay ? "/v1/responses" : "/api/chat")
+        {
+            Content = new StringContent(relay ? native : body, System.Text.Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add(Key.Item1, Key.Item2);
+        if (relay) request.Headers.Add(HostedToolActivity.ResponsesHeader, "1");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            using var response = await host.Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            if (!response.IsSuccessStatusCode)
+                Assert.Fail($"{response.StatusCode}: {await response.Content.ReadAsStringAsync(timeout.Token)}");
+            using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(timeout.Token));
+            var expected = relay ? HostedToolActivity.ResponsesEvent : "tool-input-available";
+            JsonNode? call = null;
+            while (await reader.ReadLineAsync(timeout.Token) is { } line)
+            {
+                if (!line.StartsWith("data: {", StringComparison.Ordinal)) continue;
+                var frame = JsonNode.Parse(line[6..])!;
+                if ((string?)frame["type"] == expected) { call = frame; break; }
+            }
+            Assert.NotNull(call);
+            var data = relay ? call["activity"]! : call;
+            Assert.Equal("call_live", (string?)data[relay ? "callId" : "toolCallId"]);
+            Assert.Equal("A-1", (string?)data["input"]!["sku"]);
+            await entered.Task.WaitAsync(timeout.Token);
+            Assert.Single(host.Requests); // The follow-up model request cannot start until the tool returns.
+            release.SetResult();
+            var rest = await reader.ReadToEndAsync(timeout.Token);
+            Assert.DoesNotContain("tool-approval-request", rest);
+            if (fail)
+            {
+                var output = GatewayTests.Part(rest, "tool-output-error");
+                Assert.Equal("call_live", (string?)output["toolCallId"]);
+                Assert.True((bool?)output["providerExecuted"]);
+                Assert.DoesNotContain("Private downstream failure details", rest);
+                Assert.Contains("[DONE]", rest);
+                Assert.Single(host.Requests);
+            }
+            else
+            {
+                Assert.Contains(relay ? HostedToolActivity.ResponsesEvent : "tool-output-available", rest);
+                Assert.Contains("Found", rest);
+                Assert.Equal(2, host.Requests.Count);
+            }
+        }
+        finally { release.TrySetResult(); }
     }
 
     [Theory]
@@ -361,7 +456,7 @@ public sealed class HostedToolTests
 
     private static string Result(object item) => JsonSerializer.Serialize(new { id = "resp_test", @object = "response", model = "test", status = "completed", output = new[] { item } });
 
-    private sealed class McpFixture(Action invoked) : HttpMessageHandler
+    private sealed class McpFixture(Action invoked, Func<CancellationToken, Task>? beforeResult = null) : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -378,7 +473,11 @@ public sealed class HostedToolTests
                 "tools/call" => """{"content":[{"type":"text","text":"Found"}]}""",
                 _ => throw new InvalidOperationException("Unexpected MCP request.")
             };
-            if (method == "tools/call") invoked();
+            if (method == "tools/call")
+            {
+                invoked();
+                if (beforeResult is not null) await beforeResult(ct);
+            }
             return FixtureHost.Json($$"""{"jsonrpc":"2.0","id":{{id.GetRawText()}},"result":{{result}}}""");
         }
     }

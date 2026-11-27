@@ -95,7 +95,8 @@ internal static class GatewayHostedTools
 
     internal sealed record Round(ResponseResult Result, IReadOnlyList<ResponseStreamPart> Events, McpResultReviews.Result? Review = null);
 
-    internal static async Task<Round> RunAsync(GatewayCall call, ResponseRequest request, HostedToolDefinition[] definitions, ChatRequest? chat = null)
+    internal static async Task<Round> RunAsync(GatewayCall call, ResponseRequest request, HostedToolDefinition[] definitions,
+        ChatRequest? chat = null, Func<HostedToolActivity, Task>? observe = null)
     {
         var services = call.Context.RequestServices;
         var reviews = services.GetService<McpResultReviews>() ?? throw new ContractException("Streaik hosted tools are not enabled on this gateway.", 422);
@@ -133,7 +134,9 @@ internal static class GatewayHostedTools
                     throw new ContractException("The provider returned an unexpected hosted tool call.", 502);
                 var function = calls[0];
                 using var input = JsonDocument.Parse(function.Arguments);
-                var outcome = await turn.InvokeAsync(function.Name, function.CallId, input.RootElement, call.Ct);
+                var outcome = observe is null
+                    ? await turn.InvokeAsync(function.Name, function.CallId, input.RootElement, call.Ct)
+                    : await turn.InvokeAsync(function.Name, function.CallId, input.RootElement, observe, call.Ct);
                 history.AddRange(outputItems.OfType<ResponseInputMessage>());
                 history.Add(new ResponseFunctionCallItem { CallId = function.CallId, Name = function.Name, Arguments = function.Arguments });
                 if (outcome is McpCallOutcome.Completed done)

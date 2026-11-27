@@ -126,9 +126,11 @@ public static partial class StreaikGateway
         nativeApprovals.Validate(request);
         if (hosted.Length != 0)
         {
-            var handled = await GatewayHostedTools.RunAsync(call, request, hosted);
+            var reportActivity = request.Stream == true && context.Request.Headers[Streaik.Tools.HostedToolActivity.ResponsesHeader] == "1";
+            var handled = await GatewayHostedTools.RunAsync(call, request, hosted, observe: reportActivity ? call.WriteHostedActivityAsync : null);
             nativeApprovals.Observe(handled.Result);
-            if (request.Stream == true) await call.WriteResponsesStreamAsync(GatewayHostedTools.Events(handled.Events, call.Ct));
+            if (request.Stream == true) await call.WriteResponsesStreamAsync(GatewayHostedTools.Events(reportActivity
+                ? handled.Events.Where(part => part.Type != Streaik.Tools.HostedToolActivity.ResponsesEvent) : handled.Events, call.Ct));
             else await call.WriteAsync(handled.Result);
             return;
         }
