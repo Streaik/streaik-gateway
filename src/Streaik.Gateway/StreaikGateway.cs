@@ -156,8 +156,17 @@ public static partial class StreaikGateway
             else await GatewayCall.ErrorAsync(context, Protocol.Messages, 400, "Provider does not support this protocol.");
             return;
         }
+        ValidateAnthropicMessageInputs(call, request.MaxTokens);
         if (request.Stream == true) await call.WriteMessagesStreamAsync(native.StreamMessageAsync(request, call.Headers, call.Ct));
         else await call.WriteAsync(await native.CreateMessageAsync(request, call.Headers, call.Ct));
+    }
+
+    internal static void ValidateAnthropicMessageInputs(GatewayCall call, int? maxTokens)
+    {
+        if (call.ProviderId != "anthropic") return;
+        if (maxTokens is not > 0) throw new ContractException("Anthropic requires a positive max_tokens value.");
+        if (string.IsNullOrWhiteSpace(call.Headers.GetValueOrDefault("anthropic-version")))
+            throw new ContractException("Anthropic requires the anthropic-version header.");
     }
 
     private static async Task VercelAsync(HttpContext context)

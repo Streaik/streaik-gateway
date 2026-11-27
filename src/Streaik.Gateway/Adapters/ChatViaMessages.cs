@@ -16,6 +16,7 @@ internal static partial class ProtocolAdapters
 {
     public static async Task ChatViaMessagesAsync(GatewayCall call, ChatCompletionOptions request, IMessagesProvider provider)
     {
+        StreaikGateway.ValidateAnthropicMessageInputs(call, request.MaxCompletionTokens ?? request.MaxTokens);
         var native = ToMessages(request);
         if (request.Stream == true)
             await call.WriteChatStreamAsync(ChatUpdates(call, provider.StreamMessageAsync(native, call.Headers, call.Ct), request.StreamOptions?.IncludeUsage == true));

@@ -21,7 +21,7 @@ public class VercelAttachmentTests
             ]}]
             """);
         await using var host = await FixtureHost.StartAsync();
-        using var response = await host.PostAsync("/api/chat", request.ToJsonString(), ($"X-{provider}-Key", "fixture-key"));
+        using var response = await host.PostAsync("/api/chat", request.ToJsonString(), GatewayTests.ChatHeaders(provider, ($"X-{provider}-Key", "fixture-key")));
         await GatewayTests.Success(response);
         var body = Assert.Single(host.Requests).Body!;
         var message = Assert.Single(body[provider == "openai" ? "input" : "messages"]!.AsArray())!;

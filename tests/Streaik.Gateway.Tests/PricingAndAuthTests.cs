@@ -30,7 +30,7 @@ public sealed class PricingAndAuthTests
         var request = GatewayTests.Request(route, "anthropic/claude-mythos-5-1", stream);
         if (route == "/v1/chat/completions" && stream)
             request["stream_options"] = new JsonObject { ["include_usage"] = true };
-        using var result = await host.PostAsync(route, request.ToJsonString(), ("X-Anthropic-Key", "fixture"));
+        using var result = await host.PostAsync(route, request.ToJsonString(), ("X-Anthropic-Key", "fixture"), GatewayTests.AnthropicVersion);
         var body = await GatewayTests.Success(result);
         var envelopes = stream ? Frames(body) : [JsonNode.Parse(body)!];
         var estimate = Assert.Single(envelopes.Select(e => (e["response"] ?? e)["metadata"]?["gateway"] ??

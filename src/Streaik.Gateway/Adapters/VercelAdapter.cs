@@ -48,7 +48,7 @@ internal static partial class VercelAdapter
         else if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
         {
             var native = MessagesRequestFrom(call, request);
-            stream = MessageParts(call, messages.StreamMessageAsync(native, MessagesHeaders(call, native), call.Ct));
+            stream = MessageParts(call, messages.StreamMessageAsync(native, MessagesHeaders(call, request), call.Ct));
         }
         else if (call.GetChatBridge() is { } chat)
         {

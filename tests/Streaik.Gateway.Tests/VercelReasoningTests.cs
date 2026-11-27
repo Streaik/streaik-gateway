@@ -21,7 +21,7 @@ public sealed class VercelReasoningTests
         request["reasoning"] = effort;
         request["temperature"] = 0.25;
         request["topP"] = 0.5;
-        using var response = await host.PostAsync(Route, request.ToJsonString(), ($"X-{provider}-Key", "fixture-key"));
+        using var response = await host.PostAsync(Route, request.ToJsonString(), GatewayTests.ChatHeaders(provider, ($"X-{provider}-Key", "fixture-key")));
         await GatewayTests.Success(response);
 
         var upstream = Assert.Single(host.Requests).Body!.AsObject();
@@ -46,7 +46,7 @@ public sealed class VercelReasoningTests
         var request = GatewayTests.Request(Route, $"{provider}/test", true);
         request["reasoning"] = "high";
         request["providerMetadata"] = new JsonObject { [provider] = JsonNode.Parse(options) };
-        using var response = await host.PostAsync(Route, request.ToJsonString(), ($"X-{provider}-Key", "fixture-key"));
+        using var response = await host.PostAsync(Route, request.ToJsonString(), GatewayTests.ChatHeaders(provider, ($"X-{provider}-Key", "fixture-key")));
         await GatewayTests.Success(response);
 
         var upstream = Assert.Single(host.Requests).Body!;

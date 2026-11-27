@@ -9,6 +9,11 @@ internal static partial class VercelAdapter
 {
     private const string ClientToolSearch = "client_tool_search";
     private const string AnthropicToolSearchBeta = "advanced-tool-use-2025-11-20";
+    private static readonly HashSet<string> OwnedMessagesFields = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "model", "messages", "system", "stream", "max_tokens", "tools", "tool_choice", "additionalProperties",
+        "authorization", "api_key", "apiKey", "x-api-key", "headers", "anthropic-version", "anthropic-beta", "anthropic"
+    };
 
     private static MessagesRequest MessagesRequestFrom(GatewayCall call, ChatRequest request, bool viaChat = false)
     {
@@ -53,20 +58,69 @@ internal static partial class VercelAdapter
                 }
             foreach (var (id, output, isError) in results) history.Result(id, output, isError);
         }
-        var nativeRequest = history.Build(call.NativeModel, request.MaxOutputTokens, temperature: null, topP: null, stream: true);
+        var anthropic = !viaChat && call.ProviderId == "anthropic";
+        var maxTokens = request.MaxOutputTokens;
+        JsonElement? options = null;
+        if (anthropic)
+        {
+            if (request.ProviderMetadata?.TryGetValue(call.ProviderId, out var selected) == true)
+            {
+                if (selected.ValueKind != JsonValueKind.Object) throw new ContractException("Provider-specific chat options must be an object.");
+                options = selected;
+                if (selected.TryGetProperty("max_tokens", out var limit))
+                {
+                    if (limit.ValueKind != JsonValueKind.Number || !limit.TryGetInt32(out var value) || value <= 0)
+                        throw new ContractException("Anthropic requires a positive max_tokens value.");
+                    maxTokens = value;
+                }
+            }
+            StreaikGateway.ValidateAnthropicMessageInputs(call, maxTokens);
+        }
+        var nativeRequest = history.Build(call.NativeModel, maxTokens, temperature: null, topP: null, stream: true);
         var tools = (request.Tools ?? []).DistinctBy(tool => tool.Name).Select(tool => new MessageToolDefinition
         { Name = tool.Name, Description = tool.Description, InputSchema = ToolInput(tool.InputSchema ?? new ToolSchema { Type = "object" }),
             DeferLoading = call.ProviderId == "anthropic" && tool.Name == ClientToolSearch ? null : tool.DeferLoading,
             AllowedCallers = tool.AllowedCallers?.ToList() }).ToList();
-        if (!viaChat && Option(request, call.ProviderId, "tools") is { ValueKind: JsonValueKind.Array } nativeTools)
+        if (!viaChat && !anthropic && Option(request, call.ProviderId, "tools") is { ValueKind: JsonValueKind.Array } nativeTools)
             tools.AddRange(nativeTools.Deserialize<List<MessageToolDefinition>>(MessagesJson.Default) ?? []);
-        if ((request.ToolChoice != "none" || deferred.Count > 0) && tools.Count != 0) nativeRequest.Tools = tools;
-        if (nativeRequest.Tools is not null && request.ToolChoice is { } choice)
+        var toolsAllowed = request.ToolChoice != "none" || deferred.Count > 0;
+        var hasTools = toolsAllowed && tools.Count != 0;
+        if (options is { } supplied)
+        {
+            // Copy the selected provider's JSON without deserializing individual
+            // options. Routing, translated history and tool policy still belong here.
+            var extensions = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            foreach (var property in supplied.EnumerateObject())
+                if (!OwnedMessagesFields.Contains(property.Name)) extensions[property.Name] = property.Value;
+            if (toolsAllowed && supplied.TryGetProperty("tools", out var rawTools))
+            {
+                if (rawTools.ValueKind != JsonValueKind.Array) throw new ContractException("Invalid provider option 'tools'.");
+                var names = tools.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal);
+                var merged = tools.Select(tool => JsonSerializer.SerializeToElement(tool, MessagesJson.Default)).ToList();
+                merged.AddRange(rawTools.EnumerateArray().Where(tool => tool.ValueKind != JsonValueKind.Object
+                    || !tool.TryGetProperty("name", out var name) || name.ValueKind != JsonValueKind.String || !names.Contains(name.GetString())));
+                extensions["tools"] = JsonSerializer.SerializeToElement(merged);
+                hasTools = merged.Count != 0;
+            }
+            nativeRequest.AdditionalProperties = extensions;
+        }
+        // Extension data adds properties; it does not replace typed ones.
+        if (hasTools && nativeRequest.AdditionalProperties?.ContainsKey("tools") != true) nativeRequest.Tools = tools;
+        if (hasTools && request.ToolChoice is { } choice)
             nativeRequest.ToolChoice = choice switch
             { "auto" => new MessageToolChoice(), "required" => new MessageToolChoice { Type = "any" },
                 "none" => new MessageToolChoice { Type = "none" },
                 _ => new MessageToolChoice { Type = "tool", Name = choice } };
-        if (!viaChat)
+        if (anthropic && request.Reasoning is { } anthropicEffort)
+        {
+            var thinking = Option(request, call.ProviderId, "thinking", ignoreCase: true);
+            if (thinking is null) nativeRequest.Thinking = new MessagesThinkingConfig { Type = "adaptive" };
+            var adaptive = thinking is null || (thinking is { ValueKind: JsonValueKind.Object } config
+                && config.TryGetProperty("type", out var mode) && mode.ValueKind == JsonValueKind.String && mode.ValueEquals("adaptive"));
+            if (adaptive && Option(request, call.ProviderId, "output_config", ignoreCase: true) is null)
+                nativeRequest.OutputConfig = new MessagesOutputConfig { Effort = anthropicEffort };
+        }
+        else if (!viaChat && !anthropic)
         {
             var thinking = Option(request, call.ProviderId, "thinking");
             var config = Option(request, call.ProviderId, "output_config");
@@ -76,8 +130,8 @@ internal static partial class VercelAdapter
             {
                 if (thinking is null) nativeRequest.Thinking = new MessagesThinkingConfig { Type = "adaptive" };
                 // Explicit disabled or budget-based thinking owns the reasoning behavior.
-                if (nativeRequest.Thinking?.Type == "adaptive" && (config is null || (config is { ValueKind: JsonValueKind.Object } options
-                    && !options.EnumerateObject().Any(property => property.Name.Equals("effort", StringComparison.OrdinalIgnoreCase)))))
+                if (nativeRequest.Thinking?.Type == "adaptive" && (config is null || (config is { ValueKind: JsonValueKind.Object } outputOptions
+                    && !outputOptions.EnumerateObject().Any(property => property.Name.Equals("effort", StringComparison.OrdinalIgnoreCase)))))
                     (nativeRequest.OutputConfig ??= new MessagesOutputConfig()).Effort = effort;
             }
         }
@@ -109,10 +163,10 @@ internal static partial class VercelAdapter
         catch (JsonException) { return null; }
     }
 
-    private static IReadOnlyDictionary<string, string> MessagesHeaders(GatewayCall call, MessagesRequest request)
+    private static IReadOnlyDictionary<string, string> MessagesHeaders(GatewayCall call, ChatRequest request)
     {
         if (call.ProviderId != "anthropic" || request.Tools?.Any(tool => tool.Name == ClientToolSearch) != true
-            || !request.Tools.Any(tool => tool.DeferLoading == true)) return call.Headers;
+            || !request.Tools.DistinctBy(tool => tool.Name).Any(tool => tool.Name != ClientToolSearch && tool.DeferLoading == true)) return call.Headers;
         const string header = "anthropic-beta";
         var existing = call.Headers.GetValueOrDefault(header);
         if (existing?.Split(',', StringSplitOptions.TrimEntries).Contains(AnthropicToolSearchBeta) == true) return call.Headers;

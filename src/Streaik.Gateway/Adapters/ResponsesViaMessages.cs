@@ -12,6 +12,7 @@ internal static partial class ProtocolAdapters
 {
     public static async Task ResponsesViaMessagesAsync(GatewayCall call, ResponseRequest request, IMessagesProvider provider)
     {
+        StreaikGateway.ValidateAnthropicMessageInputs(call, request.MaxOutputTokens);
         var native = ToMessages(request);
         if (request.Stream == true)
             await call.WriteResponsesStreamAsync(ResponseUpdates(provider.StreamMessageAsync(native, call.Headers, call.Ct)));

@@ -38,7 +38,7 @@ public sealed class GatewayTests
         var model = $"{provider}/vendor/Model";
         var payload = Request(route, model, stream);
         if (route == upstream) payload["future_request"] = JsonNode.Parse("""{"nested":[1,null,"extra"]}""");
-        using var response = await host.PostAsync(route, payload.ToJsonString(), ($"X-{provider}-Key", "fixture-key"), ("X-Title", "fixture"));
+        using var response = await host.PostAsync(route, payload.ToJsonString(), ChatHeaders(provider, ($"X-{provider}-Key", "fixture-key"), ("X-Title", "fixture")));
         var body = await Success(response);
         Assert.Contains("hello", body);
         var record = Assert.Single(host.Requests);
@@ -100,7 +100,7 @@ public sealed class GatewayTests
             var route = Chat; // Native for OpenAI; adapted for Anthropic.
             using var response = await host.PostAsync(route, Request(route, $"{provider}/vendor/{index}", false).ToJsonString(),
                 ("Authorization", $"Bearer key-{provider}-{index}"), ("X-OpenAI-Key", "not-open"), ("X-Anthropic-Key", "not-anth"),
-                ("X-OpenAI-Trace", "trace-open"), ("X-Anthropic-Trace", "trace-anth"), ("Anthropic-Beta", "tools-version"),
+                ("X-OpenAI-Trace", "trace-open"), ("X-Anthropic-Trace", "trace-anth"), ("Anthropic-Beta", "tools-version"), AnthropicVersion,
                 ("X-Title", "common"), ("Cookie", "session=private"), ("X-Forwarded-For", "192.0.2.1"),
                 ("Connection", $"x-{provider}-drop"), ($"X-{provider}-Drop", "hop-local"));
             await Success(response);
@@ -168,8 +168,8 @@ public sealed class GatewayTests
         using var stored = await host.PostAsync(Responses, """{"model":"openai/test","previous_response_id":"resp_old","input":"hello"}""",
             ("X-OpenAI-Key", "test"));
         Assert.Equal(HttpStatusCode.BadRequest, stored.StatusCode);
-        using var unsupported = await host.PostAsync(Chat, """{"model":"anthropic/test","messages":[{"role":"user","content":"hello"}],"n":2}""",
-            ("X-Anthropic-Key", "test"));
+        using var unsupported = await host.PostAsync(Chat, """{"model":"anthropic/test","messages":[{"role":"user","content":"hello"}],"max_completion_tokens":500,"n":2}""",
+            ("X-Anthropic-Key", "test"), AnthropicVersion);
         Assert.Equal(HttpStatusCode.BadRequest, unsupported.StatusCode);
         Assert.Empty(host.Requests);
     }
@@ -191,7 +191,7 @@ public sealed class GatewayTests
     public async Task Interrupted_messages_stream_does_not_report_a_successful_vercel_finish()
     {
         await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Sse(FixtureHost.MessageStart));
-        using var response = await host.PostAsync(Vercel, Request(Vercel, "anthropic/test", true).ToJsonString(), ("X-Anthropic-Key", "test"));
+        using var response = await host.PostAsync(Vercel, Request(Vercel, "anthropic/test", true).ToJsonString(), ("X-Anthropic-Key", "test"), AnthropicVersion);
         var sse = await Success(response);
         Assert.NotNull(Part(sse, "error")["errorText"]);
         Assert.DoesNotContain("\"type\":\"finish\"", sse);
@@ -208,7 +208,7 @@ public sealed class GatewayTests
             """{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"number\":8}"}}""",
             """{"type":"content_block_stop","index":0}""",
             """{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}""", FixtureHost.MessageStop));
-        using var response = await host.PostAsync(route, Request(route, "anthropic/test", true).ToJsonString(), ("X-Anthropic-Key", "test"));
+        using var response = await host.PostAsync(route, Request(route, "anthropic/test", true).ToJsonString(), ("X-Anthropic-Key", "test"), AnthropicVersion);
         var sse = await Success(response);
         Assert.Contains("call_fixture", sse);
         Assert.Contains(expected, sse);
@@ -244,6 +244,11 @@ public sealed class GatewayTests
         { await Task.CompletedTask; yield return new Model { Id = "org/Anything" }; }
     }
 
+    internal static readonly (string, string) AnthropicVersion = ("anthropic-version", "2026-10-21");
+
+    internal static (string, string)[] ChatHeaders(string provider, params (string, string)[] headers)
+        => provider == "anthropic" ? [.. headers, AnthropicVersion] : headers;
+
     internal static JsonObject Request(string route, string model, bool stream)
     {
         var body = route switch
@@ -253,6 +258,8 @@ public sealed class GatewayTests
             _ => JsonNode.Parse("""{"messages":[{"role":"user","content":"hello"}]}""")!.AsObject()
         };
         if (route == Messages) body["max_tokens"] = 500;
+        else if (model.StartsWith("anthropic/", StringComparison.Ordinal))
+            body[route == Vercel ? "maxOutputTokens" : route == Responses ? "max_output_tokens" : "max_completion_tokens"] = 500;
         if (route != Vercel) body["stream"] = stream;
         body["model"] = model;
         return body;

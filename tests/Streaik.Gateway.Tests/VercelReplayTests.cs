@@ -188,13 +188,13 @@ public sealed class VercelReplayTests
     [InlineData("openai", "file_search_call", "fs_1")]
     public async Task Provider_executed_handles_survive_fresh_host_without_becoming_client_calls(string provider, string type, string id)
     {
-        var key = ($"X-{provider}-Key", "fixture-key");
+        var headers = GatewayTests.ChatHeaders(provider, ($"X-{provider}-Key", "fixture-key"));
         var initial = GatewayTests.Request(Route, $"{provider}/test", true);
         initial["tools"] = JsonNode.Parse("""[{"name":"lookup"}]""");
         JsonNode providerPart;
         await using (var first = await FixtureHost.StartAsync(_ => ToolStream(provider)))
         {
-            using var response = await first.PostAsync(Route, initial.ToJsonString(), key);
+            using var response = await first.PostAsync(Route, initial.ToJsonString(), headers);
             var sse = await GatewayTests.Success(response);
             var input = GatewayTests.Part(sse, "tool-input-available");
             var output = GatewayTests.Part(sse, "tool-output-available");
@@ -213,7 +213,7 @@ public sealed class VercelReplayTests
         initial["messages"]!.AsArray().Add(JsonNode.Parse("""{"id":"user_2","role":"user","parts":[{"type":"text","text":"next"}]}"""));
 
         await using var fresh = await FixtureHost.StartAsync();
-        using var replay = await fresh.PostAsync(Route, initial.ToJsonString(), key);
+        using var replay = await fresh.PostAsync(Route, initial.ToJsonString(), headers);
         await GatewayTests.Success(replay);
         var actual = Assert.Single(fresh.Requests).Body!;
         var blocks = provider == "openai" ? actual["input"]!.AsArray().OfType<JsonObject>().ToList()
@@ -225,7 +225,8 @@ public sealed class VercelReplayTests
 
         var other = provider == "openai" ? "anthropic" : "openai";
         initial["model"] = $"{other}/test";
-        using var switched = await fresh.PostAsync(Route, initial.ToJsonString(), ($"X-{other}-Key", "other-key"));
+        if (other == "anthropic") initial["maxOutputTokens"] = 500;
+        using var switched = await fresh.PostAsync(Route, initial.ToJsonString(), GatewayTests.ChatHeaders(other, ($"X-{other}-Key", "other-key")));
         await GatewayTests.Success(switched);
         Assert.DoesNotContain(id, fresh.Requests.Last().Body!.ToJsonString());
     }
@@ -269,12 +270,12 @@ public sealed class VercelReplayTests
     {
         const string secret = "integration-test-only-client-result-secret";
         const string output = "fixture-private-tool-result";
-        var key = ($"X-{provider}-Key", "fixture-key");
+        var headers = GatewayTests.ChatHeaders(provider, ($"X-{provider}-Key", "fixture-key"));
         var request = ReviewRequest(provider);
         JsonObject reviewed;
         await using (var first = await FixtureHost.StartAsync(_ => ClientToolStream(provider), Signing(signing, secret)))
         {
-            using var response = await first.PostAsync(Route, request.ToJsonString(), key);
+            using var response = await first.PostAsync(Route, request.ToJsonString(), headers);
             var stream = await GatewayTests.Success(response);
             var call = GatewayTests.Part(stream, "tool-input-available");
             var approval = GatewayTests.Part(stream, "tool-approval-request");
@@ -295,7 +296,7 @@ public sealed class VercelReplayTests
         }
         request["messages"]!.AsArray().Add(new JsonObject { ["role"] = "assistant", ["id"] = "tool-review", ["parts"] = new JsonArray(reviewed) });
         await using var fresh = await FixtureHost.StartAsync(configure: Signing(signing, secret));
-        using var replay = await fresh.PostAsync(Route, request.ToJsonString(), key);
+        using var replay = await fresh.PostAsync(Route, request.ToJsonString(), headers);
         await GatewayTests.Success(replay);
         var upstream = Assert.Single(fresh.Requests).Body!.ToJsonString();
         Assert.Contains(provider == "openai" ? "function_call_output" : "tool_result", upstream);
@@ -308,17 +309,17 @@ public sealed class VercelReplayTests
 
         var decisionForReplay = reviewed["approval"]!.DeepClone();
         reviewed.Remove("approval");
-        using var missing = await fresh.PostAsync(Route, request.ToJsonString(), key);
+        using var missing = await fresh.PostAsync(Route, request.ToJsonString(), headers);
         Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
         reviewed["approval"] = decisionForReplay;
         if (signing)
         {
             reviewed["input"]!["n"] = 2;
-            using var tampered = await fresh.PostAsync(Route, request.ToJsonString(), key);
+            using var tampered = await fresh.PostAsync(Route, request.ToJsonString(), headers);
             Assert.Equal(HttpStatusCode.BadRequest, tampered.StatusCode);
             reviewed["input"]!["n"] = 1;
             ((JsonObject)reviewed["approval"]!).Remove("signature");
-            using var unsigned = await fresh.PostAsync(Route, request.ToJsonString(), key);
+            using var unsigned = await fresh.PostAsync(Route, request.ToJsonString(), headers);
             Assert.Equal(HttpStatusCode.BadRequest, unsigned.StatusCode);
         }
         Assert.Single(fresh.Requests);
@@ -342,21 +343,23 @@ public sealed class VercelReplayTests
         var key = ("X-Anthropic-Key", "fixture-key");
         var request = GatewayTests.Request(Route, "anthropic/test", true);
         request["tools"] = JsonNode.Parse("""[{"name":"client_tool_search"},{"name":"lookup","defer_loading":true},{"name":"eager"}]""");
+        request["providerMetadata"] = JsonNode.Parse("""{"anthropic":{"tools":[{"type":"web_fetch_20260318","name":"web_fetch"}]}}""");
         JsonNode reviewed;
         await using (var first = await FixtureHost.StartAsync(_ => FixtureHost.Sse(FixtureHost.MessageStart,
             """{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_search","name":"client_tool_search","input":{}}}""",
             """{"type":"content_block_stop","index":0}""", FixtureHost.MessageDelta, FixtureHost.MessageStop), Signing(true, secret)))
         {
-            using var response = await first.PostAsync(Route, request.ToJsonString(), key);
+            using var response = await first.PostAsync(Route, request.ToJsonString(), key, GatewayTests.AnthropicVersion, ("anthropic-beta", "fixture-beta"));
             var stream = await GatewayTests.Success(response);
             var input = GatewayTests.Part(stream, "tool-input-available");
             var review = GatewayTests.Part(stream, "tool-approval-request");
             Assert.Equal("client_tool_search", (string?)input["toolName"]);
             Assert.Equal("toolu_search", (string?)review["toolCallId"]);
             var sent = Assert.Single(first.Requests);
-            Assert.Equal("advanced-tool-use-2025-11-20", sent.Headers["anthropic-beta"]);
+            Assert.Equal("fixture-beta,advanced-tool-use-2025-11-20", sent.Headers["anthropic-beta"]);
             Assert.Null(sent.Body!["tools"]![0]!["defer_loading"]);
             Assert.True((bool?)sent.Body["tools"]![1]!["defer_loading"]);
+            Assert.Equal("web_fetch", (string?)sent.Body["tools"]![3]!["name"]);
             reviewed = new JsonObject { ["type"] = "dynamic-tool", ["toolName"] = "client_tool_search", ["toolCallId"] = "toolu_search",
                 ["state"] = approved ? "output-available" : "approval-responded", ["providerExecuted"] = false, ["input"] = input["input"]!.DeepClone(),
                 ["approval"] = new JsonObject { ["id"] = review["approvalId"]!.DeepClone(), ["approved"] = approved,
@@ -366,7 +369,7 @@ public sealed class VercelReplayTests
         request["messages"]!.AsArray().Add(new JsonObject { ["role"] = "assistant", ["id"] = "replay", ["parts"] = new JsonArray(reviewed) });
         request["messages"]!.AsArray().Add(JsonNode.Parse("""{"id":"follow-up","role":"user","parts":[{"type":"text","text":"Continue"}]}"""));
         await using var fresh = await FixtureHost.StartAsync(configure: Signing(true, secret));
-        using var replay = await fresh.PostAsync(Route, request.ToJsonString(), key);
+        using var replay = await fresh.PostAsync(Route, request.ToJsonString(), key, GatewayTests.AnthropicVersion);
         await GatewayTests.Success(replay);
         var blocks = Assert.Single(fresh.Requests).Body!["messages"]!.AsArray().SelectMany(m => m!["content"]!.AsArray());
         var result = Assert.Single(blocks, part => (string?)part?["type"] == "tool_result");

@@ -84,7 +84,8 @@ public sealed class StreamMetricsTests
             """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}""",
             """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}""",
             """{"type":"content_block_stop","index":0}""", FixtureHost.MessageDelta, FixtureHost.MessageStop), configure: Clock);
-        using var response = await host.PostAsync(route, GatewayTests.Request(route, "anthropic/claude-mythos-5-1", true).ToJsonString(), ("X-Anthropic-Key", "fixture"));
+        using var response = await host.PostAsync(route, GatewayTests.Request(route, "anthropic/claude-mythos-5-1", true).ToJsonString(),
+            ("X-Anthropic-Key", "fixture"), GatewayTests.AnthropicVersion);
         var frames = Frames(await GatewayTests.Success(response));
         Assert.Equal(4, frames.Length);
         Assert.All(frames, frame => Assert.Null(frame["usage"]));
