@@ -127,11 +127,12 @@ internal static class GatewayHostedTools
         catch (JsonException) { throw new ContractException($"Invalid named hosted '{name}' tool."); }
     }
 
-    internal sealed record Round(ResponseResult Result, IReadOnlyList<ResponseStreamPart> Events, UpstreamMcpReview.Result? Review = null);
+    internal sealed record Round(ResponseResult Result, IReadOnlyList<ResponseStreamPart> Events, UpstreamMcpReview.Result? Review = null,
+        ResponseInputItem? NativeAssistantTurn = null);
 
     internal static async Task<Round> RunAsync(GatewayCall call, ResponseRequest request, HostedToolDefinition[] definitions,
         ChatRequest? chat = null, Func<HostedToolActivity, Task>? observe = null, NativeMcpApprovals? nativeApprovals = null,
-        IReadOnlyList<NativeMcpApprovals.Decision>? decisions = null)
+        IReadOnlyList<NativeMcpApprovals.Decision>? decisions = null, Func<ResponseRequest, Task<Round>>? readRound = null)
     {
         var services = call.Context.RequestServices;
         if (services.GetService<HostedToolsEnabled>() is null) throw new ContractException("Streaik hosted tools are not enabled on this gateway.", 422);
@@ -181,7 +182,7 @@ internal static class GatewayHostedTools
             {
                 request.Tools = [.. providerTools, .. turn.Functions().Select(f => ProtocolAdapters.ResponseFunction(f.Name, f.Description, f.InputSchema))];
                 request.Input = new ResponseInput(history);
-                var result = await ReadRoundAsync(call, request);
+                var result = await (readRound is null ? ReadRoundAsync(call, request) : readRound(request));
                 // A native approval response is a single upstream decision, not part of later internal tool rounds.
                 if (history.RemoveAll(item => item is ResponseMcpApprovalResponseItem or ResponseMcpApprovalRequestItem) > 0)
                     history.AddRange(result.Result.OutputItems.OfType<ResponseMcpCallItem>());
@@ -202,8 +203,12 @@ internal static class GatewayHostedTools
                 var outcome = observe is null
                     ? await turn.InvokeAsync(function.Name, function.CallId, input.RootElement, call.Ct)
                     : await turn.InvokeAsync(function.Name, function.CallId, input.RootElement, observe, call.Ct);
-                history.AddRange(outputItems.OfType<ResponseInputMessage>());
-                history.Add(new ResponseFunctionCallItem { CallId = function.CallId, Name = function.Name, Arguments = function.Arguments });
+                if (result.NativeAssistantTurn is { } assistant) history.Add(assistant);
+                else
+                {
+                    history.AddRange(outputItems.OfType<ResponseInputMessage>());
+                    history.Add(new ResponseFunctionCallItem { CallId = function.CallId, Name = function.Name, Arguments = function.Arguments });
+                }
                 if (outcome is McpCallOutcome.Completed done)
                 {
                     history.Add(Output(function.CallId, done.Output.GetRawText()));

@@ -14,7 +14,7 @@ internal static partial class ProtocolAdapters
     public static async Task ResponsesViaMessagesAsync(GatewayCall call, ResponseRequest request, IMessagesProvider provider, McpToolDefinition[]? mcp = null)
     {
         StreaikGateway.ValidateAnthropicMessageInputs(call, request.MaxOutputTokens);
-        var native = ToMessages(request);
+        var native = ToMessages(request, mcp, MessagesMcp.CanReplayListings(call.Headers));
         var headers = mcp is { Length: > 0 } ? MessagesMcp.Add(mcp, native, call.Headers) : call.Headers;
         if (mcp is { Length: > 0 } && request.ToolChoice is JsonElement { ValueKind: JsonValueKind.String } choice && choice.ValueEquals("none"))
             native.ToolChoice = new() { Type = "none" };
@@ -23,19 +23,11 @@ internal static partial class ProtocolAdapters
         else
         {
             var result = await provider.CreateMessageAsync(native, headers, call.Ct);
-            var output = result.Content.Select((block, index) => (block, index));
-            var items = (mcp is { Length: > 0 } ? output.Where(entry => entry.block.Type is not ("mcp_tool_use" or "mcp_tool_result")) : output)
-                .Select(entry => OutputItem(result.Id!, entry.index, entry.block)).ToList();
-            if (mcp is { Length: > 0 }) items.AddRange(McpItems(result.Content));
-            var response = ResponseResultFrom(result.Id!, DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                items, result.Usage, result.StopReason);
-            response.Model = result.Model ?? call.NativeModel;
-            GatewayPricing.Attach(response, GatewayPricing.Cost(result.Metadata));
-            await call.WriteAsync(response);
+            await call.WriteAsync(MessagesRoundResult(call, result, mcp is { Length: > 0 }));
         }
     }
 
-    private static MessagesRequest ToMessages(ResponseRequest request)
+    private static MessagesRequest ToMessages(ResponseRequest request, McpToolDefinition[]? mcp = null, bool listings = false)
     {
         if (request.Reasoning is not null || request.Text is not null || request.Prompt is not null || request.Include?.Count > 0
             || request.ContextManagement?.Length > 0 || request.AdditionalProperties?.Count > 0 || request.TopLogprobs is not null
@@ -45,6 +37,7 @@ internal static partial class ProtocolAdapters
         var history = new MessagesHistory();
         history.Text("system", request.Instructions);
         history.Text("user", request.Input?.Text);
+        var labels = (mcp ?? []).Select(server => server.ServerLabel).ToHashSet(StringComparer.Ordinal);
         foreach (var item in request.Input?.Items ?? [])
         {
             switch (item)
@@ -64,19 +57,30 @@ internal static partial class ProtocolAdapters
                     history.Tool(function.CallId, function.Name, MessagesHistory.ParseArguments(function.Arguments)); break;
                 case ResponseFunctionCallOutputItem { StructuredOutput: null } result:
                     history.Result(result.CallId ?? throw new ContractException("Missing function call ID."), result.Output); break;
+                case NativeAssistantTurn turn:
+                    foreach (var block in turn.Blocks) history.Add("assistant", block);
+                    break;
+                case ResponseMcpListToolsItem { ServerLabel: { } listingLabel, Tools: { ValueKind: JsonValueKind.Array } tools }
+                    when listings && labels.Contains(listingLabel):
+                    history.Add("assistant", new MessageContentBlock { Type = "mcp_tool_listing", AdditionalProperties = new()
+                    { ["mcp_server_name"] = JsonSerializer.SerializeToElement(listingLabel), ["tools"] = tools } });
+                    break;
+                case ResponseMcpCallItem { Id: { Length: > 0 } id, ServerLabel: { } label, Name: { Length: > 0 } name,
+                    Arguments: { } args, Status: "failed" or "completed" } call when labels.Contains(label):
+                    var output = call.Status == "failed" ? call.Error : call.Output;
+                    if (output is not { ValueKind: JsonValueKind.String or JsonValueKind.Array } content)
+                        throw new ContractException("Invalid provider MCP result in Messages history.");
+                    history.Add("assistant", new MessageContentBlock { Type = "mcp_tool_use", Id = id, Name = name,
+                        ServerName = label, Input = MessagesHistory.ParseArguments(args) });
+                    history.Add("assistant", new MessageContentBlock { Type = "mcp_tool_result", ToolUseId = id, IsError = call.Status == "failed",
+                        Content = content.Deserialize<MessagesContent>(MessagesJson.Default) });
+                    break;
                 default: throw new ContractException("This Responses input item has no Messages translation.");
             }
         }
         var native = history.Build(request.Model!, request.MaxOutputTokens, request.Temperature, request.TopP, request.Stream);
         if (request.Tools is { Count: > 0 })
-            native.Tools = request.Tools.Select(tool =>
-            {
-                if (tool.Type != "function" || tool.Extra is null || tool.Extra.Keys.Any(k => k is not ("name" or "description" or "parameters" or "strict")))
-                    throw new ContractException("Only function tools can be translated to Messages.");
-                return new MessageToolDefinition { Name = String(tool.Extra, "name") ?? throw new ContractException("Missing function tool name."),
-                    Description = String(tool.Extra, "description"), InputSchema = Element(tool.Extra, "parameters"),
-                    Strict = Element(tool.Extra, "strict") is { ValueKind: JsonValueKind.True or JsonValueKind.False } strict ? strict.GetBoolean() : null };
-            }).ToList();
+            native.Tools = request.Tools.Select(MessageFunction).ToList();
         if (request.ToolChoice is JsonElement choice)
         {
             native.ToolChoice = choice.ValueKind switch
@@ -96,6 +100,42 @@ internal static partial class ProtocolAdapters
             (native.ToolChoice ??= new MessageToolChoice()).DisableParallelToolUse = !request.ParallelToolCalls.Value;
         return native;
     }
+
+    private static MessageToolDefinition MessageFunction(ResponseToolDefinition tool)
+    {
+        if (tool.Type != "function" || tool.Extra is null || tool.Extra.Keys.Any(k => k is not ("name" or "description" or "parameters" or "strict")))
+            throw new ContractException("Only function tools can be translated to Messages.");
+        return new MessageToolDefinition { Name = String(tool.Extra, "name") ?? throw new ContractException("Missing function tool name."),
+            Description = String(tool.Extra, "description"), InputSchema = Element(tool.Extra, "parameters"),
+            Strict = Element(tool.Extra, "strict") is { ValueKind: JsonValueKind.True or JsonValueKind.False } strict ? strict.GetBoolean() : null };
+    }
+
+    private static ResponseResult MessagesRoundResult(GatewayCall call, MessagesResponse result, bool nativeMcp, bool hosted = false,
+        IReadOnlyList<ResponseInputItem>? earlierMcp = null)
+    {
+        var items = new List<object>(earlierMcp ?? []);
+        var id = result.Id ?? throw new IOException("Missing upstream message ID.");
+        var mcp = nativeMcp ? McpItems(result.Content).ToDictionary(item => item.Id!, StringComparer.Ordinal) : null;
+        for (var index = 0; index < result.Content.Count; index++)
+        {
+            var block = result.Content[index];
+            if (nativeMcp && block.Type is "mcp_tool_listing" or "mcp_tool_use" or "mcp_tool_result")
+            {
+                if (McpListing(id, index, block) is { } listing) items.Add(listing);
+                if (block.Type == "mcp_tool_use" && block.Id is { } callId && mcp?.GetValueOrDefault(callId) is { } tool) items.Add(tool);
+            }
+            else if (!hosted || block.Type is "text" or "tool_use") items.Add(OutputItem(id, index, block));
+        }
+        var response = ResponseResultFrom(id, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), items, result.Usage, result.StopReason);
+        response.Model = result.Model ?? call.NativeModel;
+        GatewayPricing.Attach(response, GatewayPricing.Cost(result.Metadata));
+        return response;
+    }
+
+    private static ResponseMcpListToolsItem? McpListing(string id, int index, MessageContentBlock block) =>
+        block.Type == "mcp_tool_listing" && String(block.AdditionalProperties, "mcp_server_name") is { } label
+            && Element(block.AdditionalProperties, "tools") is { ValueKind: JsonValueKind.Array } tools
+                ? new() { Id = $"{id}_{index}", ServerLabel = label, Tools = tools } : null;
 
     private static string? String(Dictionary<string, JsonElement>? fields, string key)
         => Element(fields, key) is { ValueKind: JsonValueKind.String } value ? value.GetString() : null;
@@ -119,12 +159,17 @@ internal static partial class ProtocolAdapters
             if (block is { Type: "mcp_tool_use", Id: { } id }) calls.Add(id, block);
             else if (block is { Type: "mcp_tool_result", ToolUseId: { } callId } && calls.Remove(callId, out var call))
             {
-                var content = JsonSerializer.SerializeToElement(block.Content, MessagesJson.Default);
-                yield return new ResponseMcpCallItem { Id = callId, Name = call.Name, ServerLabel = call.ServerName,
-                    Status = block.IsError == true ? "failed" : "completed", Arguments = call.Input?.GetRawText() ?? "{}",
-                    Output = block.IsError == true ? null : content, Error = block.IsError == true ? content : null };
+                yield return McpCall(call, block);
             }
         }
+    }
+
+    private static ResponseMcpCallItem McpCall(MessageContentBlock call, MessageContentBlock? result)
+    {
+        var content = result is null ? (JsonElement?)null : JsonSerializer.SerializeToElement(result.Content, MessagesJson.Default);
+        return new() { Id = call.Id, Name = call.Name, ServerLabel = call.ServerName,
+            Status = result is null ? "incomplete" : result.IsError == true ? "failed" : "completed", Arguments = call.Input?.GetRawText() ?? "{}",
+            Output = result?.IsError == true ? null : content, Error = result?.IsError == true ? content : null };
     }
 
     private static ResponseResult ResponseResultFrom(string id, long created, List<object> items, MessagesUsage? usage, string? stop, bool running = false)
@@ -140,12 +185,17 @@ internal static partial class ProtocolAdapters
                 OutputTokensDetails = new ResponseOutputTokensDetails { ReasoningTokens = usage.OutputTokensDetails?.ThinkingTokens } } };
     }
 
-    private static async IAsyncEnumerable<ResponseStreamPart> ResponseUpdates(IAsyncEnumerable<MessageStreamPart> source, string? metadataProvider = null, bool nativeMcp = false)
+    private static async IAsyncEnumerable<ResponseStreamPart> ResponseUpdates(IAsyncEnumerable<MessageStreamPart> source, string? metadataProvider = null,
+        bool nativeMcp = false, bool hosted = false, IReadOnlyList<ResponseInputItem>? earlierMcp = null)
     {
         var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var usage = new MessagesUsage();
         var blocks = new SortedDictionary<int, (MessageContentBlock Block, StringBuilder Arguments)>();
         var mcpBlocks = new SortedDictionary<int, (MessageContentBlock Block, StringBuilder Arguments)>();
+        var omittedBlocks = new HashSet<int>();
+        var pendingMcp = new Dictionary<string, (int Index, MessageContentBlock Call)>(StringComparer.Ordinal);
+        var nativeItems = new SortedDictionary<int, ResponseInputItem>();
+        var precedingItems = earlierMcp?.Count ?? 0;
         var id = "";
         string? upstreamModel = null;
         GatewayPrice? cost = null;
@@ -161,14 +211,21 @@ internal static partial class ProtocolAdapters
         await foreach (var part in source)
         {
             var nativeIndex = part.Index ?? -1;
-            var index = nativeIndex - mcpBlocks.Keys.Count(key => key < nativeIndex);
+            var index = precedingItems + nativeIndex - omittedBlocks.Count(key => key < nativeIndex);
             switch (part)
             {
                 case { Type: "message_start", Message: { } message }:
                     id = message.Id!;
                     upstreamModel = message.Model;
                     MessagesHistory.MergeUsage(usage, message.Usage);
-                    yield return new ResponseCreated { SequenceNumber = sequence++, Response = ResponseResultFrom(id, created, [], null, null, running: true) }; break;
+                    yield return new ResponseCreated { SequenceNumber = sequence++, Response = ResponseResultFrom(id, created, [], null, null, running: true) };
+                    for (var prior = 0; prior < precedingItems; prior++)
+                    {
+                        var item = earlierMcp![prior];
+                        nativeItems.Add(prior, item);
+                        foreach (var update in NativeItemEvents(prior, item)) yield return update;
+                    }
+                    break;
                 case { Type: "content_block_start", ContentBlock: { Type: "text" or "tool_use" } block }:
                     blocks.Add(index, (block, new StringBuilder()));
                     yield return new ResponseOutputItemAdded { SequenceNumber = sequence++, OutputIndex = index, Item = StreamItem(index, block, false) };
@@ -179,13 +236,31 @@ internal static partial class ProtocolAdapters
                             { SequenceNumber = sequence++, Outputindex = index, ItemId = ItemId(index), Delta = block.Text };
                     }
                     break;
-                case { Type: "content_block_start", ContentBlock: { Type: "mcp_tool_use" or "mcp_tool_result" } block } when nativeMcp:
-                    mcpBlocks.Add(nativeIndex, (block, new StringBuilder())); break;
+                case { Type: "content_block_start", ContentBlock: { Type: "mcp_tool_use" or "mcp_tool_result" or "mcp_tool_listing" } block } when nativeMcp:
+                    mcpBlocks.Add(nativeIndex, (block, new StringBuilder()));
+                    if (block.Type == "mcp_tool_result") omittedBlocks.Add(nativeIndex);
+                    break;
+                case { Type: "content_block_start" } when hosted: omittedBlocks.Add(nativeIndex); break;
                 case { Type: "content_block_delta", Delta.PartialJson: { } args } when mcpBlocks.TryGetValue(nativeIndex, out var mcpBlock):
                     mcpBlock.Arguments.Append(args); break;
                 case { Type: "content_block_stop" } when mcpBlocks.TryGetValue(nativeIndex, out var mcpBlock):
                     if (mcpBlock.Arguments.Length > 0) mcpBlock.Block.Input = MessagesHistory.ParseArguments(mcpBlock.Arguments.ToString());
+                    var nativeBlock = mcpBlock.Block;
+                    if (nativeBlock is { Type: "mcp_tool_use", Id: { } callId }) pendingMcp.Add(callId, (index, nativeBlock));
+                    else if (nativeBlock is { Type: "mcp_tool_result", ToolUseId: { } resultId } && pendingMcp.Remove(resultId, out var toolCall))
+                    {
+                        var item = McpCall(toolCall.Call, nativeBlock);
+                        nativeItems.Add(toolCall.Index, item);
+                        foreach (var update in NativeItemEvents(toolCall.Index, item)) yield return update;
+                    }
+                    else if (nativeBlock.Type == "mcp_tool_listing")
+                    {
+                        var item = McpListing(id, index, nativeBlock) ?? throw new IOException("Invalid Anthropic MCP tool listing.");
+                        nativeItems.Add(index, item);
+                        foreach (var update in NativeItemEvents(index, item)) yield return update;
+                    }
                     break;
+                case { Type: "content_block_delta" } when mcpBlocks.ContainsKey(nativeIndex) || omittedBlocks.Contains(nativeIndex): break;
                 case { Type: "content_block_delta", Delta.Text: { } text } when blocks.TryGetValue(index, out var current):
                     current.Block.Text += text;
                     yield return new ResponseOutputTextDelta { SequenceNumber = sequence++, Outputindex = index, ItemId = ItemId(index), Delta = text }; break;
@@ -210,14 +285,15 @@ internal static partial class ProtocolAdapters
                     stop = part.Delta?.StopReason ?? stop;
                     MessagesHistory.MergeUsage(usage, part.Usage); break;
                 case { Type: "message_stop" }:
-                    var items = blocks.Select(x => OutputItem(id, x.Key, x.Value.Block)).ToList();
-                    foreach (var mcp in McpItems(mcpBlocks.Values.Select(value => value.Block)))
+                    foreach (var pending in pendingMcp.Values)
                     {
-                        var item = JsonSerializer.SerializeToElement(mcp, ResponseJson.Default).Deserialize<ResponseStreamItem>(ResponseJson.Default)!;
-                        yield return new ResponseOutputItemAdded { SequenceNumber = sequence++, OutputIndex = items.Count, Item = item };
-                        yield return new ResponseOutputItemDone { SequenceNumber = sequence++, OutputIndex = items.Count, Item = item };
-                        items.Add(mcp);
+                        var item = McpCall(pending.Call, null);
+                        nativeItems.Add(pending.Index, item);
+                        foreach (var update in NativeItemEvents(pending.Index, item)) yield return update;
                     }
+                    var items = blocks.Select(entry => (Index: entry.Key, Item: OutputItem(id, entry.Key, entry.Value.Block)))
+                        .Concat(nativeItems.Select(entry => (Index: entry.Key, Item: (object)entry.Value)))
+                        .OrderBy(entry => entry.Index).Select(entry => entry.Item).ToList();
                     var result = ResponseResultFrom(id, created, items, usage, stop);
                     if (upstreamModel is not null) result.Model = upstreamModel;
                     AttachProviderMetadata(result, part.Metadata, metadataProvider);
@@ -231,5 +307,12 @@ internal static partial class ProtocolAdapters
             }
         }
         throw new IOException("Messages stream ended without message_stop.");
+
+        IEnumerable<ResponseStreamPart> NativeItemEvents(int index, ResponseInputItem value)
+        {
+            var item = JsonSerializer.SerializeToElement(value, ResponseJson.Default).Deserialize<ResponseStreamItem>(ResponseJson.Default)!;
+            yield return new ResponseOutputItemAdded { SequenceNumber = sequence++, OutputIndex = index, Item = item };
+            yield return new ResponseOutputItemDone { SequenceNumber = sequence++, OutputIndex = index, Item = item };
+        }
     }
 }

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Streaik.ChatCompletions.Models;
 using Microsoft.Extensions.DependencyInjection;
+using Streaik.Messages;
 using Streaik.Providers;
 using Streaik.Tools;
 using Streaik.Vercel.Models;
@@ -30,8 +31,6 @@ internal static partial class VercelAdapter
         var messagesMcp = !nativeResponses && providerMcp is { Length: > 0 } && call.ProviderId == "anthropic" && call.Get<IMessagesProvider>() is not null;
         if (providerMcp is { Length: > 0 } && !nativeResponses && !messagesMcp)
             throw new ContractException("The selected provider route cannot forward provider-executed MCP.", 422);
-        if (messagesMcp && hosted is { Length: > 0 })
-            throw new ContractException("Anthropic Messages cannot mix provider MCP with Gateway-hosted tools on this route.", 422);
         if (converted && ((!nativeResponses && hosted is not { Length: > 0 }) || !upstreamReviews))
             throw new ContractException("This route cannot continue the MCP result review.", 422);
         var reviews = request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>()
@@ -70,7 +69,49 @@ internal static partial class VercelAdapter
         }
 
         IAsyncEnumerable<UIMessagePart> stream;
-        if (hosted is { Length: > 0 })
+        if (hosted is { Length: > 0 } && call.ProviderId == "anthropic" && !call.PreferChatBridge
+            && !nativeResponses && call.Get<IMessagesProvider>() is { } anthropic)
+        {
+            var native = MessagesRequestFrom(call, request, hosted: hosted);
+            var headers = MessagesHeaders(call, request);
+            if (MessagesMcp.WireTools(native).Any(tool => tool.ValueKind == JsonValueKind.Object
+                && tool.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String && GatewayHostedTools.IsReserved(name.GetString())))
+                throw new ContractException("Client function names cannot use the Streaik hosted function prefix.");
+            if (messagesMcp) headers = MessagesMcp.Add(providerMcp!, native, headers);
+            if (request.ToolChoice is { } choice)
+                native.ToolChoice ??= new() { Type = choice switch { "auto" or "none" => choice, "required" => "any", _ => "tool" },
+                    Name = choice is "auto" or "required" or "none" ? null : choice };
+            var tools = MessagesMcp.WireTools(native).ToArray();
+            var history = native.Messages;
+            var system = native.System;
+            var round = new Streaik.Responses.ResponseRequest { Stream = true, ToolChoice = request.ToolChoice switch
+            {
+                null => null,
+                "auto" or "required" or "none" => JsonSerializer.SerializeToElement(request.ToolChoice),
+                var named => JsonSerializer.SerializeToElement(new { type = "function", name = named })
+            } };
+            await call.WriteVercelStreamAsync(async write =>
+            {
+                var started = false;
+                IReadOnlyList<MessageStreamPart> events = [];
+                List<IReadOnlyList<MessageStreamPart>> earlierMcp = [];
+                async Task Observe(HostedToolActivity activity)
+                {
+                    if (!started) { await write(new StartStepUIPart()); started = true; }
+                    await write(HostedActivityPart(activity));
+                }
+                var handled = await GatewayHostedTools.RunAsync(call, round, hosted, request, Observe, readRound: async next =>
+                {
+                    if (McpActivityEvents(events) is { Length: > 0 } activity) earlierMcp.Add(activity);
+                    ProtocolAdapters.PrepareHostedChatRound(native, history, system, tools, next);
+                    return await ProtocolAdapters.ReadHostedMessagesRoundAsync(call, anthropic, native, headers, messagesMcp,
+                        captureChat: parts => events = parts);
+                });
+                return WithApprovals(HostedMessageParts(call, events, earlierMcp, handled.Review, started));
+            });
+            return;
+        }
+        else if (hosted is { Length: > 0 })
         {
             var native = await ResponseRequestFromAsync(call, request, hosted, providerMcp);
             if (native.AdditionalProperties?.ContainsKey(GatewayContainerArtifacts.ReplayKey) == true)

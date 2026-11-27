@@ -127,11 +127,7 @@ public static partial class StreaikGateway
         {
             if (call.Get<IResponsesProvider>() is not null)
                 GatewayHostedTools.AddProviderTools(request.Tools ??= [], tools.Provider);
-            else if (call.ProviderId == "anthropic" && call.Get<IMessagesProvider>() is { } messages)
-            {
-                if (hosted.Length != 0) throw new ContractException("Anthropic Messages cannot mix provider MCP with Gateway-hosted tools on this route.", 422);
-                messagesMcp = messages;
-            }
+            else if (call.ProviderId == "anthropic" && call.Get<IMessagesProvider>() is { } messages) messagesMcp = messages;
             else
                 throw new ContractException("The selected provider route cannot forward provider-executed MCP.", 422);
         }
@@ -140,8 +136,12 @@ public static partial class StreaikGateway
         if (hosted.Length != 0)
         {
             var reportActivity = request.Stream == true && context.Request.Headers[Streaik.Tools.HostedToolActivity.ResponsesHeader] == "1";
+            // The approval proof lives on the public Responses envelope, not in native Messages options.
+            var readRound = call.ProviderId == "anthropic" && !call.PreferChatBridge && call.Get<IResponsesProvider>() is null
+                && call.Get<IMessagesProvider>() is { } anthropic
+                ? ProtocolAdapters.HostedMessagesReader(call, anthropic, request, tools.Provider) : null;
             var handled = await GatewayHostedTools.RunAsync(call, request, hosted, observe: reportActivity ? call.WriteHostedActivityAsync : null,
-                nativeApprovals: nativeApprovals, decisions: decisions);
+                nativeApprovals: nativeApprovals, decisions: decisions, readRound: readRound);
             if (request.Stream == true) await call.WriteResponsesStreamAsync(GatewayHostedTools.Events(reportActivity
                 ? handled.Events.Where(part => part.Type != Streaik.Tools.HostedToolActivity.ResponsesEvent) : handled.Events, call.Ct));
             else await call.WriteAsync(handled.Result);

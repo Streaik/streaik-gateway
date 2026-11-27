@@ -8,13 +8,21 @@ namespace Streaik.Gateway;
 internal static class MessagesMcp
 {
     private const string Beta = "mcp-client-2025-11-20";
+    internal const string ListingBeta = "mcp-client-2026-09-15";
+
+    internal static bool CanReplayListings(IReadOnlyDictionary<string, string> headers) => HasBeta(headers, ListingBeta);
+
+    private static bool HasBeta(IReadOnlyDictionary<string, string> headers, string beta)
+        => headers.GetValueOrDefault("anthropic-beta")?.Split(',', StringSplitOptions.TrimEntries).Contains(beta, StringComparer.Ordinal) == true;
 
     internal static IReadOnlyDictionary<string, string> Add(McpToolDefinition[] servers, MessagesRequest request,
         IReadOnlyDictionary<string, string> headers)
     {
         var extra = request.AdditionalProperties ??= new(StringComparer.Ordinal);
-        if (extra.ContainsKey("mcp_servers"))
-            throw new ContractException("Named provider MCP tools cannot be combined with native mcp_servers.", 422);
+        if (extra.Keys.Any(key => key.Equals("mcp_servers", StringComparison.OrdinalIgnoreCase))
+            || extra.TryGetValue("tools", out var native) && native.EnumerateArray().Any(tool => tool.ValueKind == JsonValueKind.Object
+                && tool.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String && type.ValueEquals("mcp_toolset")))
+            throw new ContractException("Named provider MCP tools cannot be combined with raw Anthropic MCP configuration.", 422);
         var labels = new HashSet<string>(StringComparer.Ordinal);
         List<Dictionary<string, object>> endpoints = [];
         List<JsonElement> toolsets = [];
@@ -51,14 +59,26 @@ internal static class MessagesMcp
             toolsets.Add(JsonSerializer.SerializeToElement(toolset));
         }
         extra["mcp_servers"] = JsonSerializer.SerializeToElement(endpoints);
-        var tools = extra.TryGetValue("tools", out var raw) ? raw.EnumerateArray().ToList()
-            : (request.Tools ?? []).Select(tool => JsonSerializer.SerializeToElement(tool, MessagesJson.Default)).ToList();
-        tools.AddRange(toolsets);
-        extra["tools"] = JsonSerializer.SerializeToElement(tools);
-        request.Tools = null;
+        AppendTools(request, toolsets);
         var existing = headers.GetValueOrDefault("anthropic-beta");
-        if (existing?.Split(',', StringSplitOptions.TrimEntries).Contains(Beta, StringComparer.Ordinal) == true) return headers;
+        var older = HasBeta(headers, Beta);
+        var newer = CanReplayListings(headers);
+        if (newer && older)
+            return new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
+            { ["anthropic-beta"] = string.Join(",", existing!.Split(',', StringSplitOptions.TrimEntries).Where(beta => beta != Beta)) };
+        if (newer || older) return headers;
         return new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
         { ["anthropic-beta"] = string.IsNullOrWhiteSpace(existing) ? Beta : $"{existing},{Beta}" };
+    }
+
+    internal static IEnumerable<JsonElement> WireTools(MessagesRequest request) => request.AdditionalProperties?.TryGetValue("tools", out var raw) == true
+        ? raw.EnumerateArray().ToArray()
+        : (request.Tools ?? []).Select(tool => JsonSerializer.SerializeToElement(tool, MessagesJson.Default));
+
+    internal static void AppendTools(MessagesRequest request, IEnumerable<JsonElement> additional)
+    {
+        var tools = WireTools(request).Concat(additional).ToArray();
+        (request.AdditionalProperties ??= new(StringComparer.Ordinal))["tools"] = JsonSerializer.SerializeToElement(tools);
+        request.Tools = null;
     }
 }

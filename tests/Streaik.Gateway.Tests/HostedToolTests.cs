@@ -201,6 +201,208 @@ public sealed class HostedToolTests
     }
 
     [Theory]
+    [InlineData("/api/chat", true, false)]
+    [InlineData("/api/chat", true, true)]
+    [InlineData("/v1/responses", true, false)]
+    [InlineData("/v1/responses", true, true)]
+    [InlineData("/v1/responses", false, true)]
+    public async Task Anthropic_hosted_MCP_preserves_native_rounds_and_keeps_credentials_separate(string route, bool stream, bool mixed)
+    {
+        const string providerUrl = "https://provider.example.test/mcp";
+        const string listingBeta = "mcp-client-2026-09-15";
+        var calls = 0;
+        await using var host = await FixtureHost.StartAsync(upstream =>
+        {
+            Assert.Equal("/v1/messages", upstream.Path);
+            var body = upstream.Body!;
+            Assert.Equal(512, (int?)body["max_tokens"]);
+            Assert.Equal("2026-10-21", upstream.Headers["anthropic-version"]);
+            Assert.DoesNotContain(Endpoint.AbsoluteUri, upstream.RawBody!);
+            Assert.DoesNotContain("mcp-only", upstream.RawBody!);
+            Assert.DoesNotContain("X-Region", upstream.RawBody!);
+            Assert.Null(body["include"]);
+            if (route == "/api/chat")
+            {
+                Assert.Equal("adaptive", (string?)body["thinking"]!["type"]);
+                Assert.Equal("medium", (string?)body["output_config"]!["effort"]);
+            }
+            var tools = body["tools"]!.AsArray();
+            var function = Assert.Single(tools, tool => ((string?)tool?["name"])?.StartsWith("streaik_mcp_", StringComparison.Ordinal) == true)!;
+            Assert.NotNull(function["input_schema"]);
+            Assert.True((bool?)body["tool_choice"]!["disable_parallel_tool_use"]);
+            if (mixed)
+            {
+                Assert.Equal(listingBeta, upstream.Headers["anthropic-beta"]);
+                var endpoint = Assert.Single(body["mcp_servers"]!.AsArray())!;
+                Assert.Equal(providerUrl, (string?)endpoint["url"]);
+                Assert.Equal("upstream-only", (string?)endpoint["authorization_token"]);
+                Assert.Equal("upstream", (string?)Assert.Single(tools, tool => (string?)tool?["type"] == "mcp_toolset")!["mcp_server_name"]);
+            }
+            else Assert.Null(body["mcp_servers"]);
+
+            var messages = body["messages"]!.AsArray();
+            if (messages.Count == 1)
+            {
+                var blocks = new List<string>();
+                if (mixed)
+                {
+                    blocks.Add("""{"type":"mcp_tool_listing","mcp_server_name":"upstream","tools":[{"name":"status","input_schema":{"type":"object"}}]}""");
+                    blocks.Add("""{"type":"mcp_tool_use","id":"mcptoolu_fixture","name":"status","server_name":"upstream","input":{}}""");
+                    blocks.Add("""{"type":"mcp_tool_result","tool_use_id":"mcptoolu_fixture","is_error":false,"content":[{"type":"text","text":"Upstream result"}]}""");
+                }
+                blocks.Add("""{"type":"thinking","thinking":"fixture thinking","signature":"fixture signature"}""");
+                blocks.Add($$$"""{"type":"tool_use","id":"toolu_gateway","name":{{{function["name"]!.ToJsonString()}}},"input":{}}""");
+                return AnthropicMcpFixtureReply(stream, "tool_use", blocks);
+            }
+
+            Assert.Equal(3, messages.Count);
+            var assistant = messages[1]!["content"]!.AsArray();
+            var expected = mixed ? new[] { "mcp_tool_listing", "mcp_tool_use", "mcp_tool_result", "thinking", "tool_use" }
+                : new[] { "thinking", "tool_use" };
+            Assert.Equal(expected, assistant.Select(block => (string?)block!["type"]));
+            Assert.Equal("fixture signature", (string?)assistant[^2]!["signature"]);
+            if (mixed) Assert.Equal("mcptoolu_fixture", (string?)assistant[2]!["tool_use_id"]);
+            var result = Assert.Single(messages[2]!["content"]!.AsArray())!;
+            Assert.Equal("tool_result", (string?)result["type"]);
+            Assert.Equal("toolu_gateway", (string?)result["tool_use_id"]);
+            Assert.Contains("Found", result["content"]!.ToJsonString());
+            return FixtureHost.Reply(upstream);
+        }, services =>
+        {
+            services.AddStreaikPublicHostedTools();
+            var access = PublicMcpAccess.Create(allowLoopback: false, allowRequestCredentials: true);
+            services.AddSingleton(access with { CreateMcpHandler = endpoint =>
+            {
+                Assert.Equal(Endpoint, endpoint);
+                return new McpFixture(() => calls++, observe: outgoing =>
+                {
+                    Assert.Equal("Bearer mcp-only", outgoing.Headers.GetValues("Authorization").Single());
+                    Assert.Equal("eu", outgoing.Headers.GetValues("X-Region").Single());
+                    Assert.False(outgoing.Headers.Contains("x-api-key"));
+                });
+            } });
+        });
+
+        var request = McpRequest(route, "client", "anthropic/test");
+        var chat = route == "/api/chat";
+        JsonNode Descriptor(JsonNode entry) => chat ? entry["inputSchema"]!["mcp"]! : entry;
+        Descriptor(request["tools"]![0]!)["require_approval"] = "never";
+        if (chat)
+        {
+            request["providerMetadata"] = JsonNode.Parse("""{"anthropic":{"max_tokens":512}}""");
+            request["reasoning"] = "medium";
+        }
+        else
+        {
+            request["max_output_tokens"] = 512;
+            request["stream"] = stream;
+        }
+        var headers = new List<(string, string)> { ("x-anthropic-key", "inference-only"), ("anthropic-version", "2026-10-21") };
+        if (mixed)
+        {
+            var tool = McpRequest(route, "server")["tools"]![0]!.DeepClone();
+            var descriptor = Descriptor(tool);
+            descriptor["server_label"] = "upstream";
+            descriptor["server_url"] = providerUrl;
+            descriptor["headers"] = new JsonObject { ["Authorization"] = "Bearer upstream-only" };
+            request["tools"]!.AsArray().Add(tool);
+            headers.Add(("anthropic-beta", listingBeta));
+        }
+        using var response = await host.PostAsync(route, request.ToJsonString(), headers.ToArray());
+        var wire = await GatewayTests.Success(response);
+        Assert.Contains("hello", wire);
+        if (mixed)
+        {
+            Assert.Contains("mcptoolu_fixture", wire);
+            Assert.Contains(chat ? "mcp_tool_listing" : "mcp_list_tools", wire);
+        }
+        Assert.Equal(1, calls);
+        Assert.Equal(2, host.Requests.Count);
+    }
+
+    private static HttpResponseMessage AnthropicMcpFixtureReply(bool stream, string stop, IReadOnlyList<string> blocks)
+    {
+        if (!stream) return FixtureHost.Json($$$"""
+            {"type":"message","id":"msg_mcp","model":"upstream-revision","role":"assistant","content":[{{{string.Join(",", blocks)}}}],"stop_reason":"{{{stop}}}","usage":{"input_tokens":10,"output_tokens":3}}
+            """);
+        var events = new List<string> { FixtureHost.MessageStart };
+        for (var index = 0; index < blocks.Count; index++)
+        {
+            events.Add($$"""{"type":"content_block_start","index":{{index}},"content_block":{{blocks[index]}}}""");
+            events.Add($$"""{"type":"content_block_stop","index":{{index}}}""");
+        }
+        events.Add($$$"""{"type":"message_delta","delta":{"stop_reason":"{{{stop}}}"},"usage":{"output_tokens":3}}""");
+        events.Add(FixtureHost.MessageStop);
+        return FixtureHost.Sse(events.ToArray());
+    }
+
+    [Theory]
+    [InlineData("/api/chat", true)]
+    [InlineData("/v1/responses", true)]
+    [InlineData("/v1/responses", false)]
+    public async Task Anthropic_provider_MCP_replays_new_beta_listings_and_results_without_local_execution(string route, bool stream)
+    {
+        const string listing = """{"type":"mcp_tool_listing","mcp_server_name":"inventory","tools":[{"name":"lookup","input_schema":{"type":"object"}}]}""";
+        const string invocation = """{"type":"mcp_tool_use","id":"mcptoolu_lookup","name":"lookup","server_name":"inventory","input":{}}""";
+        const string result = """{"type":"mcp_tool_result","tool_use_id":"mcptoolu_lookup","is_error":false,"content":[{"type":"text","text":"Upstream result"}]}""";
+        await using var host = await FixtureHost.StartAsync(upstream =>
+        {
+            Assert.Equal("other-beta,mcp-client-2026-09-15", upstream.Headers["anthropic-beta"]);
+            var messages = upstream.Body!["messages"]!.AsArray();
+            if (messages.Count == 1) return AnthropicMcpFixtureReply(stream, "end_turn", [listing, invocation, result]);
+            var assistant = messages[1]!["content"]!.AsArray();
+            Assert.Equal(new[] { "mcp_tool_listing", "mcp_tool_use", "mcp_tool_result" }, assistant.Select(block => (string?)block!["type"]));
+            Assert.Equal("lookup", (string?)assistant[0]!["tools"]![0]!["name"]);
+            Assert.Equal("mcptoolu_lookup", (string?)assistant[1]!["id"]);
+            Assert.Equal("mcptoolu_lookup", (string?)assistant[2]!["tool_use_id"]);
+            Assert.Equal("Upstream result", (string?)assistant[2]!["content"]![0]!["text"]);
+            return FixtureHost.Reply(upstream);
+        }, services => services.AddSingleton(new HostedToolAccess((_, _, _, _) =>
+            throw new InvalidOperationException("Provider MCP must not open a gateway MCP session."))));
+
+        var request = McpRequest(route, "server", "anthropic/test");
+        var chat = route == "/api/chat";
+        var descriptor = chat ? request["tools"]![0]!["inputSchema"]!["mcp"]! : request["tools"]![0]!;
+        descriptor["headers"]!.AsObject().Remove("X-Region");
+        request[chat ? "maxOutputTokens" : "max_output_tokens"] = 512;
+        if (!chat) request["stream"] = stream;
+        (string, string)[] headers = [("x-anthropic-key", "inference-only"), ("anthropic-version", "2026-10-21"),
+            ("anthropic-beta", "other-beta,mcp-client-2026-09-15")];
+        using var first = await host.PostAsync(route, request.ToJsonString(), headers);
+        var wire = await GatewayTests.Success(first);
+        if (chat)
+        {
+            var input = GatewayTests.Part(wire, "tool-input-available");
+            var output = GatewayTests.Part(wire, "tool-output-available");
+            var metadata = GatewayTests.Part(wire, "message-metadata")["messageMetadata"]!;
+            Assert.True((bool?)input["providerExecuted"]);
+            request["messages"]!.AsArray().Add(new JsonObject
+            {
+                ["id"] = "a", ["role"] = "assistant", ["metadata"] = metadata.DeepClone(),
+                ["parts"] = new JsonArray(new JsonObject
+                {
+                    ["type"] = "dynamic-tool", ["state"] = "output-available", ["providerExecuted"] = true,
+                    ["toolCallId"] = input["toolCallId"]!.DeepClone(), ["toolName"] = input["toolName"]!.DeepClone(),
+                    ["input"] = input["input"]!.DeepClone(), ["output"] = output["output"]!.DeepClone(),
+                    ["callProviderMetadata"] = input["providerMetadata"]!.DeepClone(), ["resultProviderMetadata"] = output["providerMetadata"]!.DeepClone()
+                })
+            });
+            request["messages"]!.AsArray().Add(JsonNode.Parse("""{"id":"u2","role":"user","parts":[{"type":"text","text":"follow up"}]}"""));
+        }
+        else
+        {
+            var response = stream ? GatewayTests.Part(wire, "response.completed")["response"]! : JsonNode.Parse(wire)!;
+            var output = response["output"]!.AsArray();
+            Assert.Equal(new[] { "mcp_list_tools", "mcp_call" }, output.Select(item => (string?)item!["type"]));
+            request["input"] = new JsonArray(JsonNode.Parse("""{"role":"user","content":"hello"}"""),
+                output[0]!.DeepClone(), output[1]!.DeepClone(), JsonNode.Parse("""{"role":"user","content":"follow up"}"""));
+        }
+        using var replayed = await host.PostAsync(route, request.ToJsonString(), headers);
+        Assert.Contains("hello", await GatewayTests.Success(replayed));
+        Assert.Equal(2, host.Requests.Count);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task Provider_MCP_API_Chat_replays_execution_approvals_upstream_only(bool approved)
