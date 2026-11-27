@@ -2,6 +2,7 @@ using System.Text.Json;
 using Streaik.ChatCompletions.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Streaik.Providers;
+using Streaik.Tools;
 using Streaik.Vercel.Models;
 using Streaik.Vercel.Security;
 
@@ -19,31 +20,50 @@ internal static partial class VercelAdapter
         "authorization", "api_key", "apiKey", "x-api-key", "headers"
     };
 
-    public static async Task RunAsync(GatewayCall call, ChatRequest request)
+    public static async Task RunAsync(GatewayCall call, ChatRequest request, HostedToolDefinition[]? hosted = null)
     {
         var services = call.Context.RequestServices;
         var signer = services.GetService<ToolApprovalSigner>();
+        var converted = request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>().Any(UpstreamMcpReview.IsReview);
+        var upstreamReviews = services.GetService<McpResultReviews>();
+        var nativeResponses = !call.PreferChatBridge && call.Get<IResponsesProvider>() is not null;
+        if (converted && ((!nativeResponses && hosted is not { Length: > 0 }) || upstreamReviews is null))
+            throw new ContractException("This route cannot continue the MCP result review.", 422);
         var reviews = request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>()
             .Where(tool => tool.Approval is not null || tool.State is "approval-requested" or "approval-responded").ToList();
-        if (reviews.Any(tool => tool.ProviderExecuted == true))
+        if (reviews.Any(tool => tool.ProviderExecuted == true && !UpstreamMcpReview.IsReview(tool)))
             throw new ContractException("API Chat only accepts client tool result approvals.");
         // A registered, user-bound signer can be unavailable for requests without a subject.
         // That is distinct from a host intentionally running with signing disabled.
         var signingUnavailable = signer is null
             && services.GetService<IServiceProviderIsService>()?.IsService(typeof(ToolApprovalSigner)) == true;
-        if (signingUnavailable && (request.Tools?.Count > 0 || reviews.Count != 0 || HasNativeClientTools(call, request)))
+        if (signingUnavailable && (request.Tools?.Count > 0 || reviews.Count != 0 || HasNativeClientTools(call, request)
+            || hosted?.OfType<McpToolDefinition>().Any(tool => tool.RequireApproval is McpApprovalPolicy.Always) == true))
             throw new ContractException("Tool approval signing is unavailable for this request.");
         try { signer?.ValidateIncoming(request.Messages); }
         catch (ToolApprovalSignatureException error) { throw new ContractException(error.Message); }
 
+        Func<Streaik.Responses.ResponseMcpApprovalRequestItem, Task<IReadOnlyList<UIMessagePart>>>? ConvertReview(
+            Streaik.Responses.ResponseRequest native) => nativeResponses && upstreamReviews is not null && !signingUnavailable
+            ? item => UpstreamMcpReview.CreateAsync(upstreamReviews, call, request, native.Tools, item) : null;
+
         IAsyncEnumerable<UIMessagePart> stream;
-        if (!call.PreferChatBridge && call.Get<IResponsesProvider>() is { } responses)
+        if (hosted is { Length: > 0 })
+        {
+            var native = await ResponseRequestFromAsync(call, request, hosted);
+            if (native.AdditionalProperties?.ContainsKey(GatewayContainerArtifacts.ReplayKey) == true)
+                throw new ContractException("Hosted tools cannot be combined with container artifact continuation.", 422);
+            var handled = await GatewayHostedTools.RunAsync(call, native, hosted, request);
+            stream = ResponseParts(call, GatewayHostedTools.Events(handled.Events, call.Ct), new GatewayContainerArtifacts.Turn(call),
+                native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), handled.Review);
+        }
+        else if (!call.PreferChatBridge && call.Get<IResponsesProvider>() is { } responses)
         {
             var native = await ResponseRequestFromAsync(call, request);
             await GatewayContainerArtifacts.PrepareAsync(call, native);
             var artifacts = new GatewayContainerArtifacts.Turn(call);
             stream = ResponseParts(call, responses.StreamResponseAsync(native, call.Headers, call.Ct), artifacts,
-                native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true);
+                native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native));
         }
         else if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
         {
@@ -97,12 +117,13 @@ internal static partial class VercelAdapter
     private static async IAsyncEnumerable<UIMessagePart> ReviewClientResults(IAsyncEnumerable<UIMessagePart> stream,
         bool signingUnavailable, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        var reviewed = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var part in stream.WithCancellation(cancellationToken))
         {
             if (part is ToolCallPart { ProviderExecuted: false } && signingUnavailable)
                 throw new ContractException("Tool approval signing is unavailable for this request.");
             yield return part;
-            if (part is ToolCallPart { ProviderExecuted: false } tool)
+            if (part is ToolCallPart { ProviderExecuted: false } tool && reviewed.Add(tool.ToolCallId))
                 yield return new ToolApprovalRequestUIPart
                 { ToolCallId = tool.ToolCallId, ApprovalId = Guid.NewGuid().ToString("N") };
         }

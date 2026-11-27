@@ -61,6 +61,12 @@ jobs:
           repository: Streaik/streaik-interactions
           path: streaik-interactions
 
+      - name: Checkout Tools
+        uses: actions/checkout@v4
+        with:
+          repository: Streaik/streaik-tools
+          path: streaik-tools
+
       - name: Setup .NET 11
         uses: actions/setup-dotnet@v4
         with:

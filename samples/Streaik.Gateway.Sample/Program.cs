@@ -71,7 +71,7 @@ builder.Services.AddEcho().AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgr
     .AddAskARC().AddAgnesAI().AddSoniox()
     .AddAnyRouter().AddAether().AddRunway()
     .AddAmbient().AddAllToken().AddCirrascale()
-    .AddStreaikHeaderAuth().AddStreaikReferences();
+    .AddStreaikHeaderAuth().AddStreaikReferences().AddStreaikPublicHostedTools();
 if (builder.Configuration.GetValue<bool>("Providers:edgespeak:Enabled")) builder.Services.AddEdgeSpeak();
 if (builder.Configuration["Gateway:ApprovalSigningKey"] is { } secret && !string.IsNullOrWhiteSpace(secret))
     builder.Services.AddSingleton(new ToolApprovalSigner(secret));

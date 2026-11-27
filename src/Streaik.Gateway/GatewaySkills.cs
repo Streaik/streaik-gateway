@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Net.Http.Headers;
 using Streaik.Providers;
+using Streaik.Tools;
 
 namespace Streaik.Gateway;
 
@@ -99,6 +100,19 @@ public static partial class StreaikGateway
         context.Response.Headers.CacheControl = "no-store";
         context.Response.Headers.XContentTypeOptions = "nosniff";
         await Results.File(archive, "application/zip", version is null ? $"{skillId}.zip" : $"{skillId}-{version}.zip").ExecuteAsync(context);
+    }
+
+    internal static async ValueTask<Stream> DownloadHostedSkillAsync(HttpContext context, SkillReference reference, CancellationToken ct)
+    {
+        if (reference.SkillId.Split('/') is not [var provider, var skill] || !ValidSkillSegment(provider) || !ValidSkillSegment(skill)
+            || reference.Version is { } version && !ValidSkillSegment(version))
+            throw new ContractException("A hosted skill reference needs a provider-qualified skill ID and an optional version.");
+        var reader = context.RequestServices.GetKeyedService<ISkillReadProvider>(provider)
+            ?? throw new ContractException("The provider does not support skill reads.", 404);
+        // Keep the inference provider binding intact; cross-provider skill reads need that provider's scoped credential.
+        if (!HasSkillAccess(context, provider)) throw new ProviderCredentialException(provider);
+        var archive = await reader.DownloadSkillAsync(skill, reference.Version, ct);
+        return new MemoryStream(archive, writable: false);
     }
 
     private static Task ListSkillDestinationsAsync(HttpContext context)

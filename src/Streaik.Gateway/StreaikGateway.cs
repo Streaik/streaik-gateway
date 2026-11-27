@@ -24,7 +24,8 @@ public static partial class StreaikGateway
         endpoints.MapGet("/v1/models", ModelsAsync).WithTags("OpenAI").Produces<ModelResponse>();
         MapGatewayPost<ChatCompletionOptions>(endpoints, "/v1/chat/completions", ChatAsync)
             .Produces<ChatCompletion>(200, JsonMediaType, EventStreamMediaType);
-        MapGatewayPost<ResponseRequest>(endpoints, "/v1/responses", ResponsesAsync, Protocol.Responses)
+        var approvals = new Streaik.Tools.McpApprovalDecisions();
+        MapGatewayPost<ResponseRequest>(endpoints, "/v1/responses", context => ResponsesAsync(context, approvals), Protocol.Responses)
             .Produces<ResponseResult>(200, JsonMediaType, EventStreamMediaType);
         MapGatewayPost<MessagesRequest>(endpoints, "/v1/messages", MessagesAsync, Protocol.Messages)
             .Produces<MessagesResponse>(200, JsonMediaType, EventStreamMediaType);
@@ -110,7 +111,7 @@ public static partial class StreaikGateway
         else await call.WriteAsync(await native.CompleteChatAsync(request, call.Headers, call.Ct));
     }
 
-    private static async Task ResponsesAsync(HttpContext context)
+    private static async Task ResponsesAsync(HttpContext context, Streaik.Tools.McpApprovalDecisions approvals)
     {
         var request = await ReadAsync<ResponseRequest>(context, ResponseJson.Default);
         var call = new GatewayCall(context, request.Model);
@@ -120,6 +121,17 @@ public static partial class StreaikGateway
         request.Store = false;
         request.Model = call.NativeModel;
         await call.ResolveDeapiModelAsync();
+        var hosted = GatewayHostedTools.Extract(request);
+        var nativeApprovals = new NativeMcpApprovals(call, request, approvals);
+        nativeApprovals.Validate(request);
+        if (hosted.Length != 0)
+        {
+            var handled = await GatewayHostedTools.RunAsync(call, request, hosted);
+            nativeApprovals.Observe(handled.Result);
+            if (request.Stream == true) await call.WriteResponsesStreamAsync(GatewayHostedTools.Events(handled.Events, call.Ct));
+            else await call.WriteAsync(handled.Result);
+            return;
+        }
         if (UseSpeechFileAdapter(call)) { await SpeechViaResponsesAsync(call, request); return; }
         if (UseTranscriptionFileAdapter(call)) { await TranscriptionViaResponsesAsync(call, request); return; }
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ResponsesAsync(call, request, image); return; }
@@ -134,8 +146,8 @@ public static partial class StreaikGateway
         }
         await GatewayContainerArtifacts.PrepareAsync(call, request);
         var artifacts = new GatewayContainerArtifacts.Turn(call);
-        if (request.Stream == true) await call.WriteResponsesStreamAsync(native.StreamResponseAsync(request, call.Headers, call.Ct), artifacts);
-        else await call.WriteAsync(await native.CreateResponseAsync(request, call.Headers, call.Ct), artifacts);
+        if (request.Stream == true) await call.WriteResponsesStreamAsync(nativeApprovals.Observe(native.StreamResponseAsync(request, call.Headers, call.Ct), call.Ct), artifacts);
+        else await call.WriteAsync(nativeApprovals.Observe(await native.CreateResponseAsync(request, call.Headers, call.Ct)), artifacts);
     }
 
     private static async Task MessagesAsync(HttpContext context)
@@ -176,7 +188,9 @@ public static partial class StreaikGateway
             throw new ContractException("reasoning must be null, low, medium, or high.");
         var call = new GatewayCall(context, request.Model);
         await call.ResolveDeapiModelAsync();
-        if (await ImageRouteAsync(call) is { } image) await ImageAdapters.VercelAsync(call, request, image);
+        var hosted = GatewayHostedTools.Extract(request);
+        if (hosted.Length != 0) await VercelAdapter.RunAsync(call, request, hosted);
+        else if (await ImageRouteAsync(call) is { } image) await ImageAdapters.VercelAsync(call, request, image);
         else if (VideoRoute(call) is { } video) await VideoViaVercelAsync(call, request, video);
         else if (!await TryVercelAudioChatAsync(call, request))
         {

@@ -37,6 +37,52 @@ internal static partial class ProtocolAdapters
         }
     }
 
+    internal static async Task<ResponseResult> HostedResponseRoundAsync(GatewayCall call, ResponseRequest request)
+    {
+        if (call.Get<IResponsesProvider>() is { } responses)
+            return await responses.CreateResponseAsync(request, call.Headers, call.Ct);
+        if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
+        {
+            StreaikGateway.ValidateAnthropicMessageInputs(call, request.MaxOutputTokens);
+            return MessageAsResponse(call, await messages.CreateMessageAsync(ToMessages(request), call.Headers, call.Ct), 0, call.ProviderId);
+        }
+        if (call.GetChatBridge() is not { } chat) throw new ContractException("This provider does not support hosted tools on this route.", 422);
+        var metadataProvider = call.Get<INativeChatOptionsProvider>() is not null ? call.ProviderId : null;
+        var extensions = request.AdditionalProperties;
+        try
+        {
+            request.AdditionalProperties = extensions is null ? null : new(extensions);
+            var options = TakeChatOptions(metadataProvider, request.AdditionalProperties);
+            var native = ChatCompletionsBridge.Request(ToMessages(request), request.MaxOutputTokens);
+            native.AdditionalProperties = options;
+            var completion = await chat.CompleteChatAsync(native, call.Headers, call.Ct);
+            return MessageAsResponse(call, ChatCompletionsBridge.Result(completion, metadataProvider), completion.Created, metadataProvider);
+        }
+        finally { request.AdditionalProperties = extensions; }
+    }
+
+    internal static IAsyncEnumerable<Streaik.Responses.Streaming.ResponseStreamPart> HostedResponseStreamAsync(GatewayCall call, ResponseRequest request)
+    {
+        if (call.Get<IResponsesProvider>() is { } responses) return responses.StreamResponseAsync(request, call.Headers, call.Ct);
+        if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
+        {
+            StreaikGateway.ValidateAnthropicMessageInputs(call, request.MaxOutputTokens);
+            return ResponseUpdates(messages.StreamMessageAsync(ToMessages(request), call.Headers, call.Ct));
+        }
+        if (call.GetChatBridge() is not { } chat) throw new ContractException("This provider does not support hosted tools on this route.", 422);
+        var metadataProvider = call.Get<INativeChatOptionsProvider>() is not null ? call.ProviderId : null;
+        var extensions = request.AdditionalProperties;
+        try
+        {
+            request.AdditionalProperties = extensions is null ? null : new(extensions);
+            var options = TakeChatOptions(metadataProvider, request.AdditionalProperties);
+            var native = ChatCompletionsBridge.Request(ToMessages(request), request.MaxOutputTokens);
+            native.AdditionalProperties = options;
+            return ResponseUpdates(ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), metadataProvider is not null, metadataProvider), metadataProvider);
+        }
+        finally { request.AdditionalProperties = extensions; }
+    }
+
     internal static async Task WriteTranscriptAsync(GatewayCall call, TranscriptionResponse transcript, bool stream, bool responses)
     {
         var id = $"msg_{Guid.NewGuid():N}";
@@ -61,13 +107,16 @@ internal static partial class ProtocolAdapters
     }
 
     private static async Task WriteMessageAsResponseAsync(GatewayCall call, MessagesResponse message, long created, string? metadataProvider)
+        => await call.WriteAsync(MessageAsResponse(call, message, created, metadataProvider));
+
+    private static ResponseResult MessageAsResponse(GatewayCall call, MessagesResponse message, long created, string? metadataProvider)
     {
         var result = ResponseResultFrom(message.Id!, created > 0 ? created : DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             message.Content.Select((block, index) => OutputItem(message.Id!, index, block)).ToList(), message.Usage, message.StopReason);
         result.Model = message.Model ?? call.NativeModel;
         AttachProviderMetadata(result, message.Metadata, metadataProvider);
         GatewayPricing.Attach(result, GatewayPricing.Cost(message.Metadata));
-        await call.WriteAsync(result);
+        return result;
     }
 
     private static Dictionary<string, JsonElement>? TakeChatOptions(string? provider, Dictionary<string, JsonElement>? extensions)

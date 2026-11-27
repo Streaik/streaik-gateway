@@ -6,5 +6,6 @@
     <PackageReference Include="ModelContextProtocol.Core" Version="2.4.0" />
     <ProjectReference Include="../../../streaik-providers/src/Streaik.Providers/Streaik.Providers.csproj" />
     <ProjectReference Include="../../../streaik-vercel/src/Streaik.Vercel/Streaik.Vercel.csproj" />
+    <ProjectReference Include="../../../streaik-tools/src/Streaik.Tools/Streaik.Tools.csproj" />
   </ItemGroup>
 </Project>
