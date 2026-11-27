@@ -24,8 +24,7 @@ public static partial class StreaikGateway
         endpoints.MapGet("/v1/models", ModelsAsync).WithTags("OpenAI").Produces<ModelResponse>();
         MapGatewayPost<ChatCompletionOptions>(endpoints, "/v1/chat/completions", ChatAsync)
             .Produces<ChatCompletion>(200, JsonMediaType, EventStreamMediaType);
-        var approvals = new Streaik.Tools.McpApprovalDecisions();
-        MapGatewayPost<ResponseRequest>(endpoints, "/v1/responses", context => ResponsesAsync(context, approvals), Protocol.Responses)
+        MapGatewayPost<ResponseRequest>(endpoints, "/v1/responses", ResponsesAsync, Protocol.Responses)
             .Produces<ResponseResult>(200, JsonMediaType, EventStreamMediaType);
         MapGatewayPost<MessagesRequest>(endpoints, "/v1/messages", MessagesAsync, Protocol.Messages)
             .Produces<MessagesResponse>(200, JsonMediaType, EventStreamMediaType);
@@ -111,7 +110,7 @@ public static partial class StreaikGateway
         else await call.WriteAsync(await native.CompleteChatAsync(request, call.Headers, call.Ct));
     }
 
-    private static async Task ResponsesAsync(HttpContext context, Streaik.Tools.McpApprovalDecisions approvals)
+    private static async Task ResponsesAsync(HttpContext context)
     {
         var request = await ReadAsync<ResponseRequest>(context, ResponseJson.Default);
         var call = new GatewayCall(context, request.Model);
@@ -122,18 +121,19 @@ public static partial class StreaikGateway
         request.Model = call.NativeModel;
         await call.ResolveDeapiModelAsync();
         var hosted = GatewayHostedTools.Extract(request);
-        var nativeApprovals = new NativeMcpApprovals(call, request, approvals);
-        nativeApprovals.Validate(request);
+        var nativeApprovals = new NativeMcpApprovals(call, request, hosted);
+        var decisions = nativeApprovals.Validate(request);
         if (hosted.Length != 0)
         {
             var reportActivity = request.Stream == true && context.Request.Headers[Streaik.Tools.HostedToolActivity.ResponsesHeader] == "1";
-            var handled = await GatewayHostedTools.RunAsync(call, request, hosted, observe: reportActivity ? call.WriteHostedActivityAsync : null);
-            nativeApprovals.Observe(handled.Result);
+            var handled = await GatewayHostedTools.RunAsync(call, request, hosted, observe: reportActivity ? call.WriteHostedActivityAsync : null,
+                nativeApprovals: nativeApprovals, decisions: decisions);
             if (request.Stream == true) await call.WriteResponsesStreamAsync(GatewayHostedTools.Events(reportActivity
                 ? handled.Events.Where(part => part.Type != Streaik.Tools.HostedToolActivity.ResponsesEvent) : handled.Events, call.Ct));
             else await call.WriteAsync(handled.Result);
             return;
         }
+        if (request.Input?.Items is { } history) request.Input = nativeApprovals.RestoreHistory(request, history.ToList());
         if (UseSpeechFileAdapter(call)) { await SpeechViaResponsesAsync(call, request); return; }
         if (UseTranscriptionFileAdapter(call)) { await TranscriptionViaResponsesAsync(call, request); return; }
         if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ResponsesAsync(call, request, image); return; }

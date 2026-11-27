@@ -278,38 +278,82 @@ public sealed class HostedToolTests
         Assert.Equal("mcp", (string?)tools[1]["name"]);
     }
 
-    [Fact]
-    public async Task Local_policy_does_not_manufacture_a_hosted_Responses_approval()
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task Hosted_Responses_approval_resumes_on_another_instance(bool approve, bool stream)
     {
         var invoked = 0;
-        await using var host = await FixtureHost.StartAsync(request =>
-        {
-            if (request.Body?["input"] is not JsonArray input || input.Any(item => (string?)item?["type"] == "function_call_output"))
-                return FixtureHost.Reply(request);
-            var function = request.Body!["tools"]![0]!["name"]!.GetValue<string>();
-            Assert.StartsWith("streaik_mcp_", function);
-            return FixtureHost.Json(Result(new { type = "function_call", call_id = "call_fixture", name = function, arguments = "{}" }));
-        }, services =>
+        var keys = new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider();
+        void Configure(IServiceCollection services)
         {
             services.AddStreaikHostedTools();
+            services.AddSingleton<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(keys);
             services.AddSingleton(new HostedToolAccess((label, endpoint, _, _) => ValueTask.FromResult(
                 label == "inventory" && endpoint == Endpoint ? new McpEndpointAccess { ToolNames = new HashSet<string> { "lookup" } } : null),
                 CreateMcpHandler: _ => new McpFixture(() => invoked++)));
-        }, configureApp: Identify);
+        }
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            var function = request.Body!["tools"]![0]!["name"]!.GetValue<string>();
+            Assert.StartsWith("streaik_mcp_", function);
+            var result = Result(new { type = "function_call", id = "fc_fixture", call_id = "call_fixture", name = function, arguments = "{\"country\":\"Poland\"}" });
+            return stream ? FixtureHost.Sse($$"""{"type":"response.completed","sequence_number":0,"response":{{result}}}""") : FixtureHost.Json(result);
+        }, Configure);
+        await using var replica = await FixtureHost.StartAsync(request =>
+        {
+            Assert.Null(request.Body?["streaik_mcp_approvals"]);
+            var input = request.Body!["input"]!.AsArray();
+            Assert.DoesNotContain(input, item => ((string?)item?["type"])?.StartsWith("mcp_approval_", StringComparison.Ordinal) == true);
+            var call = Assert.Single(input, item => (string?)item?["type"] == "function_call")!;
+            var output = Assert.Single(input, item => (string?)item?["type"] == "function_call_output")!;
+            Assert.Equal("call_fixture", (string?)call["call_id"]);
+            Assert.Equal("call_fixture", (string?)output["call_id"]);
+            Assert.Equal(approve, ((string?)output["output"])!.Contains("Found", StringComparison.Ordinal));
+            return FixtureHost.Reply(request);
+        }, Configure);
 
-        const string tools = """[{"type":"mcp","name":"mcp","server_label":"inventory","server_url":"https://inventory.example.test/mcp"}]""";
+        const string tools = """[{"type":"mcp","name":"mcp","server_label":"inventory","server_url":"https://inventory.example.test/mcp","require_approval":"always"}]""";
         const string original = """{"role":"user","content":[{"type":"input_text","text":"look up an item"}]}""";
-        using var first = await host.PostAsync("/v1/responses", $$"""{"model":"openai/test","input":[{{original}}],"tools":{{tools}}}""", Key);
-        var body = await first.Content.ReadAsStringAsync();
-        Assert.Equal(HttpStatusCode.Forbidden, first.StatusCode);
-        Assert.DoesNotContain("mcp_approval_request", body);
+        using var first = await host.PostAsync("/v1/responses", $$"""{"model":"openai/test","stream":{{stream.ToString().ToLowerInvariant()}},"input":[{{original}}],"tools":{{tools}}}""", Key);
+        var body = await GatewayTests.Success(first);
+        var response = stream ? GatewayTests.Part(body, "response.completed")["response"]! : JsonNode.Parse(body)!;
+        var pending = response["output"]!.AsArray().Single()!;
+        Assert.Equal("mcp_approval_request", (string?)pending["type"]);
+        Assert.Equal("lookup", (string?)pending["name"]);
+        Assert.Null(pending["output"]);
+        if (stream) Assert.Equal((string?)pending["id"], (string?)GatewayTests.Part(body, "response.output_item.done")["item"]!["id"]);
+        Assert.DoesNotContain("streaik_mcp_inventory", body);
         Assert.Equal(0, invoked);
+
+        var proof = response["metadata"]!["streaik_mcp_approvals"];
+        var continuation = JsonNode.Parse($$"""{"model":"openai/test","input":[{{original}},{{pending.ToJsonString()}},{"type":"mcp_approval_response","approval_request_id":{{pending["id"]!.ToJsonString()}},"approve":{{approve.ToString().ToLowerInvariant()}}}],"tools":{{tools}},"streaik_mcp_approvals":{{proof!.ToJsonString()}}}""")!;
+        var tampered = continuation.DeepClone();
+        tampered["input"]![1]!["arguments"] = "{}";
+        using var altered = await replica.PostAsync("/v1/responses", tampered.ToJsonString(), Key);
+        Assert.Equal(HttpStatusCode.Forbidden, altered.StatusCode);
+        using var wrongCaller = await replica.PostAsync("/v1/responses", continuation.ToJsonString(), (Key.Name, "another-key"));
+        Assert.Equal(HttpStatusCode.Forbidden, wrongCaller.StatusCode);
+        Assert.Equal(0, invoked);
+
+        using var resumed = await replica.PostAsync("/v1/responses", continuation.ToJsonString(), Key);
+        var resumedResponse = JsonNode.Parse(await GatewayTests.Success(resumed))!;
+        var completed = resumedResponse["output"]!.AsArray().Single(item => (string?)item?["type"] == "mcp_call")!;
+        Assert.Equal((string?)pending["id"], (string?)completed["approval_request_id"]);
+        Assert.Equal(approve ? "completed" : "failed", (string?)completed["status"]);
+        Assert.Equal(approve ? 1 : 0, invoked);
+
+        completed.AsObject().Remove("approval_request_id");
+        var historyProof = resumedResponse["metadata"]!["streaik_mcp_history"]!;
+        using var replay = await replica.PostAsync("/v1/responses", $$"""{"model":"openai/test","input":[{{original}},{{completed.ToJsonString()}}],"tools":{{tools}},"streaik_mcp_history":{{historyProof.ToJsonString()}}}""", Key);
+        await GatewayTests.Success(replay);
+        Assert.Equal(approve ? 1 : 0, invoked);
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Native_Responses_forwards_a_real_approval_and_consumes_the_decision_once(bool approve)
+    public async Task Native_Responses_forwards_a_real_approval_with_inline_context(bool approve)
     {
         var dispatches = 0;
         await using var host = await FixtureHost.StartAsync(request =>
@@ -317,23 +361,26 @@ public sealed class HostedToolTests
             var decision = request.Body?["input"]?.AsArray().FirstOrDefault(item => (string?)item?["type"] == "mcp_approval_response");
             if (decision is null) return FixtureHost.Json(Result(new { type = "mcp_approval_request", id = "native_approval", server_label = "inventory", name = "lookup", arguments = "{}" }));
             Assert.Equal("native_approval", (string?)decision["approval_request_id"]);
+            Assert.Contains(request.Body!["input"]!.AsArray(), item => (string?)item?["type"] == "mcp_approval_request" && (string?)item?["id"] == "native_approval");
+            Assert.Null(request.Body["streaik_mcp_approvals"]);
             if ((bool?)decision["approve"] == true) dispatches++;
             return FixtureHost.Reply(request);
-        }, configureApp: Identify);
+        }, configure: services => services.AddStreaikReferences(), configureApp: Identify);
         const string tools = """[{"type":"mcp","server_label":"inventory","server_url":"https://inventory.example.test/mcp"}]""";
         const string original = """{"role":"user","content":[{"type":"input_text","text":"look up an item"}]}""";
-        var continuation = $$"""{"model":"openai/test","input":[{{original}},{"type":"mcp_approval_response","approval_request_id":"native_approval","approve":{{(approve ? "true" : "false")}}}],"tools":{{tools}}}""";
-        using var unknown = await host.PostAsync("/v1/responses", continuation, Key);
+        var continuation = JsonNode.Parse($$"""{"model":"openai/test","input":[{{original}},{"type":"mcp_approval_response","approval_request_id":"native_approval","approve":{{(approve ? "true" : "false")}}}],"tools":{{tools}}}""")!;
+        using var unknown = await host.PostAsync("/v1/responses", continuation.ToJsonString(), Key);
         Assert.Equal(HttpStatusCode.Forbidden, unknown.StatusCode);
         using var first = await host.PostAsync("/v1/responses", $$"""{"model":"openai/test","input":[{{original}}],"tools":{{tools}}}""", Key);
-        var item = JsonNode.Parse(await GatewayTests.Success(first))!["output"]![0]!;
+        var response = JsonNode.Parse(await GatewayTests.Success(first))!;
+        var item = response["output"]![0]!;
         Assert.Equal("native_approval", (string?)item["id"]);
         Assert.Equal("{}", (string?)item["arguments"]);
         Assert.Equal(0, dispatches);
-        using var resumed = await host.PostAsync("/v1/responses", continuation, Key);
+        continuation["input"]!.AsArray().Insert(1, item.DeepClone());
+        continuation["streaik_mcp_approvals"] = response["metadata"]!["streaik_mcp_approvals"]!.DeepClone();
+        using var resumed = await host.PostAsync("/v1/responses", continuation.ToJsonString(), Key);
         Assert.True(resumed.IsSuccessStatusCode, await resumed.Content.ReadAsStringAsync());
-        using var replay = await host.PostAsync("/v1/responses", continuation, Key);
-        Assert.Equal(HttpStatusCode.Forbidden, replay.StatusCode);
         Assert.Equal(approve ? 1 : 0, dispatches);
     }
 
@@ -370,10 +417,6 @@ public sealed class HostedToolTests
         Assert.Equal("Poland", (string?)approval["approvalDescriptor"]!["input"]!["country"]);
         Assert.Equal("Found", (string?)approval["approvalDescriptor"]!["output"]!["content"]![0]!["text"]);
         Assert.DoesNotContain("Found", host.Requests.Single().Body!.ToJsonString());
-        Assert.Equal(1, invoked);
-
-        using var duplicate = await host.PostAsync("/api/chat", request.ToJsonString(), Key);
-        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
         Assert.Equal(1, invoked);
 
         var decision = new JsonObject

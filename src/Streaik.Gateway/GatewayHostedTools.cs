@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.AspNetCore.DataProtection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
@@ -17,7 +18,8 @@ public static class GatewayHostedToolHosting
     /// <summary>Enables named gateway tools. Register a scoped HostedToolAccess for MCP and skill reference resolution.</summary>
     public static IServiceCollection AddStreaikHostedTools(this IServiceCollection services)
     {
-        services.TryAddSingleton(new McpResultReviews());
+        services.AddDataProtection().SetApplicationName("Streaik.Gateway");
+        services.TryAddSingleton(new HostedToolsEnabled());
         return services;
     }
 
@@ -41,6 +43,8 @@ public static class GatewayHostedToolHosting
         return origin.Count == 0 || origin.Count == 1 && Uri.TryCreate(origin[0], UriKind.Absolute, out var url) && url.IsLoopback;
     }
 }
+
+internal sealed class HostedToolsEnabled;
 
 internal static class GatewayHostedTools
 {
@@ -93,13 +97,14 @@ internal static class GatewayHostedTools
         catch (JsonException) { throw new ContractException($"Invalid named hosted '{name}' tool."); }
     }
 
-    internal sealed record Round(ResponseResult Result, IReadOnlyList<ResponseStreamPart> Events, McpResultReviews.Result? Review = null);
+    internal sealed record Round(ResponseResult Result, IReadOnlyList<ResponseStreamPart> Events, UpstreamMcpReview.Result? Review = null);
 
     internal static async Task<Round> RunAsync(GatewayCall call, ResponseRequest request, HostedToolDefinition[] definitions,
-        ChatRequest? chat = null, Func<HostedToolActivity, Task>? observe = null)
+        ChatRequest? chat = null, Func<HostedToolActivity, Task>? observe = null, NativeMcpApprovals? nativeApprovals = null,
+        IReadOnlyList<NativeMcpApprovals.Decision>? decisions = null)
     {
         var services = call.Context.RequestServices;
-        var reviews = services.GetService<McpResultReviews>() ?? throw new ContractException("Streaik hosted tools are not enabled on this gateway.", 422);
+        if (services.GetService<HostedToolsEnabled>() is null) throw new ContractException("Streaik hosted tools are not enabled on this gateway.", 422);
         var access = services.GetService<HostedToolAccess>() ?? new HostedToolAccess();
         if (access.ResolveSkill is null)
             access = access with { ResolveSkill = (reference, ct) => StreaikGateway.DownloadHostedSkillAsync(call.Context, reference, ct) };
@@ -112,7 +117,32 @@ internal static class GatewayHostedTools
         try
         {
             await using var turn = await HostedToolTurn.CreateAsync(definitions, ToolCaller.Direct, access, call.Ct, functionPrefix: Prefix);
-            List<ResponseInputItem> history = [.. initial];
+            List<ResponseInputItem> history = nativeApprovals?.RestoreHistory(request, initial).Items?.ToList() ?? initial;
+            List<ResponseMcpCallItem> completed = [];
+            Dictionary<string, string> receipts = new(StringComparer.Ordinal);
+            foreach (var decision in decisions ?? [])
+            {
+                var proof = decision.Proof;
+                var item = decision.Item;
+                var arguments = item.Arguments!;
+                var denied = "The user declined to run the MCP tool.";
+                JsonElement? output = null;
+                if (decision.Approve)
+                {
+                    using var input = JsonDocument.Parse(arguments);
+                    // The proof authenticates the exact call. The new turn still checks current access, including deferred tools.
+                    var executed = await turn.ResumeApprovedAsync(new(item.Id!, proof.CallId!, proof.Server, proof.EndpointBinding!,
+                        proof.Name, ToolCaller.Direct, input.RootElement), call.Ct);
+                    if (executed is not McpCallOutcome.Completed execution) throw new ContractException("The approved MCP call did not complete.", 502);
+                    output = execution.Output;
+                }
+                history.Add(new ResponseFunctionCallItem { CallId = proof.CallId!, Name = proof.Function!, Arguments = arguments });
+                history.Add(Output(proof.CallId!, output is { } value ? value.GetRawText() : denied));
+                completed.Add(nativeApprovals!.Complete(new ResponseMcpCallItem { ServerLabel = proof.Server, Name = proof.Name,
+                    ApprovalRequestId = item.Id, Arguments = arguments, Status = decision.Approve ? "completed" : "failed",
+                    Output = output is { } resultValue ? JsonSerializer.SerializeToElement(resultValue.GetRawText()) : null,
+                    Error = decision.Approve ? null : JsonSerializer.SerializeToElement(denied) }, decision, receipts));
+            }
             if (turn.Instructions is { } instructions)
                 request.Instructions = string.IsNullOrWhiteSpace(request.Instructions) ? instructions : $"{request.Instructions}\n\n{instructions}";
             // Only the host dispatches its functions. Keep client and hosted batches separate.
@@ -123,11 +153,16 @@ internal static class GatewayHostedTools
                 request.Input = new ResponseInput(history);
                 var result = await ReadRoundAsync(call, request);
                 // A native approval response is a single upstream decision, not part of later internal tool rounds.
-                if (history.RemoveAll(item => item is ResponseMcpApprovalResponseItem) > 0)
+                if (history.RemoveAll(item => item is ResponseMcpApprovalResponseItem or ResponseMcpApprovalRequestItem) > 0)
                     history.AddRange(result.Result.OutputItems.OfType<ResponseMcpCallItem>());
                 var outputItems = result.Result.OutputItems.ToArray();
                 var calls = outputItems.OfType<ResponseFunctionCallItem>().ToArray();
-                if (!calls.Any(f => f.Namespace is null && IsReserved(f.Name))) return result;
+                if (!calls.Any(f => f.Namespace is null && IsReserved(f.Name)))
+                {
+                    nativeApprovals?.Observe(result.Result);
+                    NativeMcpApprovals.AttachHistory(result.Result, receipts);
+                    return WithMcpItems(result, completed);
+                }
                 if (round == MaxRounds || result.Result.Status != "completed" || result.Result.Error is not null || calls.Length != 1
                     || calls[0].Namespace is not null || !turn.Owns(calls[0].Name) || string.IsNullOrEmpty(calls[0].CallId) || !Permits(request.ToolChoice, calls[0].Name)
                     || outputItems.OfType<ResponseMcpApprovalRequestItem>().Any())
@@ -144,28 +179,55 @@ internal static class GatewayHostedTools
                     history.Add(Output(function.CallId, done.Output.GetRawText()));
                     continue;
                 }
-                if (chat is not null && outcome is McpCallOutcome.ApprovalRequired { Approval: var approval }
-                    && definitions.OfType<McpToolDefinition>().SingleOrDefault(tool => tool.ServerLabel == approval.ServerLabel)
-                        is { RequireApproval: McpApprovalPolicy.Always } descriptor)
+                if (outcome is not McpCallOutcome.ApprovalRequired { Approval: var approval })
+                    throw new ContractException("Unexpected hosted MCP approval data.", 502);
+                var descriptor = definitions.OfType<McpToolDefinition>().Single(tool => tool.ServerLabel == approval.ServerLabel);
+                if (chat is not null)
                 {
-                    var scope = UpstreamMcpReview.Binding(call, chat);
-                    // On API Chat 'always' explicitly asks to execute for review, not yet to disclose to inference.
-                    McpResultReviews.Result review;
-                    try
-                    {
-                        review = await reviews.ExecuteHostedAsync(scope, UpstreamMcpReview.HostedBinding(descriptor), approval, function.Name,
-                            () => turn.ResumeApprovedAsync(approval, call.Ct));
-                    }
-                    catch (InvalidOperationException) { throw new ContractException("The hosted MCP call could not be completed for review or was already handled.", 409); }
+                    if (descriptor.RequireApproval is McpApprovalPolicy.Never)
+                        throw new ContractException("This hosted MCP tool requires review. Select an approval policy to review its result.", 403);
+                    var review = await UpstreamMcpReview.ExecuteHostedAsync(call, chat, descriptor, approval, function.Name,
+                        () => turn.ResumeApprovedAsync(approval, call.Ct));
                     result.Result.Output = outputItems.Where(item => !ReferenceEquals(item, function)).ToArray();
                     return new(result.Result, [new ResponseCompleted { Response = result.Result, SequenceNumber = 0 }], review);
                 }
-                throw new ContractException("This hosted MCP tool requires approval. No upstream approval was requested; the tool was not dispatched.", 403);
+                if (nativeApprovals is null) throw new ContractException("MCP execution approval is unavailable.", 422);
+                var pending = new ResponseMcpApprovalRequestItem { Id = $"mcpr_{approval.ApprovalId}", ServerLabel = approval.ServerLabel,
+                    Name = approval.ToolName, Arguments = function.Arguments };
+                var index = Array.IndexOf(outputItems, function);
+                result.Result.Output = outputItems.Where(item => !ReferenceEquals(item, function)).ToArray();
+                var safeEvents = result.Events.Where(part => part is not ResponseStreamIndexedPart { OutputIndex: var itemIndex } || itemIndex != index).ToArray();
+                var paused = WithMcpItems(result with { Events = safeEvents }, [.. completed, pending]);
+                nativeApprovals.Observe(paused.Result, approval, function.Name);
+                NativeMcpApprovals.AttachHistory(paused.Result, receipts);
+                return paused;
             }
             throw new ContractException("The hosted tool round limit was reached.", 502);
         }
         catch (UnauthorizedAccessException) { throw new ContractException("The host did not authorize this hosted tool operation.", 403); }
         catch (InvalidDataException) { throw new ContractException("Invalid hosted tool data.", 422); }
+    }
+
+    private static Round WithMcpItems(Round round, IReadOnlyList<ResponseInputItem> added)
+    {
+        if (added.Count == 0) return round;
+        var index = round.Result.Output.Count();
+        round.Result.Output = [.. round.Result.Output, .. added];
+        if (round.Events.Count == 0) return round;
+        var events = round.Events.ToList();
+        var terminal = events[^1];
+        events.RemoveAt(events.Count - 1);
+        var sequence = terminal is ResponseCompleted done ? done.SequenceNumber : ((ResponseIncompleteEvent)terminal).SequenceNumber;
+        foreach (var item in added)
+        {
+            var streamItem = JsonSerializer.SerializeToElement(item, ResponseJson.Default).Deserialize<ResponseStreamItem>(ResponseJson.Default)!;
+            events.Add(new ResponseOutputItemAdded { SequenceNumber = sequence++, OutputIndex = index, Item = streamItem });
+            events.Add(new ResponseOutputItemDone { SequenceNumber = sequence++, OutputIndex = index++, Item = streamItem });
+        }
+        events.Add(terminal is ResponseIncompleteEvent
+            ? new ResponseIncompleteEvent { SequenceNumber = sequence, Response = round.Result, AdditionalProperties = terminal.AdditionalProperties }
+            : new ResponseCompleted { SequenceNumber = sequence, Response = round.Result, AdditionalProperties = terminal.AdditionalProperties });
+        return round with { Events = events };
     }
 
     internal static async Task<Round> ReadRoundAsync(GatewayCall call, ResponseRequest request)

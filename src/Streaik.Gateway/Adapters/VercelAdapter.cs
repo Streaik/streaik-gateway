@@ -25,9 +25,9 @@ internal static partial class VercelAdapter
         var services = call.Context.RequestServices;
         var signer = services.GetService<ToolApprovalSigner>();
         var converted = request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>().Any(UpstreamMcpReview.IsReview);
-        var upstreamReviews = services.GetService<McpResultReviews>();
+        var upstreamReviews = services.GetService<HostedToolsEnabled>() is not null;
         var nativeResponses = !call.PreferChatBridge && call.Get<IResponsesProvider>() is not null;
-        if (converted && ((!nativeResponses && hosted is not { Length: > 0 }) || upstreamReviews is null))
+        if (converted && ((!nativeResponses && hosted is not { Length: > 0 }) || !upstreamReviews))
             throw new ContractException("This route cannot continue the MCP result review.", 422);
         var reviews = request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>()
             .Where(tool => tool.Approval is not null || tool.State is "approval-requested" or "approval-responded").ToList();
@@ -49,8 +49,8 @@ internal static partial class VercelAdapter
                 && tool.ToolMetadata?.GetValueOrDefault(HostedToolActivity.UiMetadataKey).ValueKind == JsonValueKind.True);
 
         Func<Streaik.Responses.ResponseMcpApprovalRequestItem, Task<IReadOnlyList<UIMessagePart>>>? ConvertReview(
-            Streaik.Responses.ResponseRequest native) => nativeResponses && upstreamReviews is not null && !signingUnavailable
-            ? item => UpstreamMcpReview.CreateAsync(upstreamReviews, call, request, native.Tools, item) : null;
+            Streaik.Responses.ResponseRequest native) => nativeResponses && upstreamReviews && !signingUnavailable
+            ? item => UpstreamMcpReview.CreateAsync(call, request, native.Tools, item) : null;
 
         IAsyncEnumerable<UIMessagePart> WithApprovals(IAsyncEnumerable<UIMessagePart> parts)
         {

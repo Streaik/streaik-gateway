@@ -59,9 +59,9 @@ internal static partial class VercelAdapter
                         break;
                     case ToolInvocationPart tool when UpstreamMcpReview.IsReview(tool):
                         if (message.Role != Role.assistant || !seen.Add(tool.ToolCallId)
-                            || call.Context.RequestServices.GetService<McpResultReviews>() is not { } reviews)
+                            || call.Context.RequestServices.GetService<HostedToolsEnabled>() is null)
                             throw new ContractException("Invalid converted MCP result review.", 403);
-                        input.AddRange(UpstreamMcpReview.Resolve(reviews, call, request, tools, tool, hosted));
+                        input.AddRange(UpstreamMcpReview.Resolve(call, request, tools, tool, hosted));
                         break;
                     case ToolInvocationPart { ProviderExecuted: true } tool when message.Role == Role.assistant:
                         if (call.ProviderId == "openai" && (tool.ToolName == "tool_search" || tool.Type == "tool-tool_search"))
@@ -243,7 +243,7 @@ internal static partial class VercelAdapter
     private static async IAsyncEnumerable<UIMessagePart> ResponseParts(GatewayCall call,
         IAsyncEnumerable<ResponseStreamPart> source, GatewayContainerArtifacts.Turn artifacts, bool includeEncryptedReasoning,
         Func<ResponseMcpApprovalRequestItem, Task<IReadOnlyList<UIMessagePart>>>? convertReview = null,
-        McpResultReviews.Result? hostedReview = null, bool stepStarted = false)
+         UpstreamMcpReview.Result? hostedReview = null, bool stepStarted = false)
     {
         var text = new HashSet<(string Item, int Index)>();
         var reasoning = new HashSet<string>(StringComparer.Ordinal);
