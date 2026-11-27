@@ -13,17 +13,22 @@ namespace Streaik.Gateway;
 
 internal readonly record struct GatewayPrice(decimal Amount);
 
-internal static class GatewayPricing
+internal static partial class GatewayPricing
 {
     private static readonly ConcurrentDictionary<string, JsonObject> Catalog = new(StringComparer.Ordinal);
     private static readonly JsonSerializerOptions Json = JsonSerializerOptions.Web;
 
     public static ModelPricing? Rates(string provider, string model)
     {
+        if (RateCard(provider, model) is not { } price || price["input"] is null || price["output"] is null) return null;
+        return price.Deserialize<ModelPricing>(Json);
+    }
+
+    private static JsonObject? RateCard(string provider, string model)
+    {
         var data = Catalog.GetOrAdd(provider, id => ProviderCatalog.ReadPricing(id) ?? new());
         var qualified = model.StartsWith(provider + "/", StringComparison.Ordinal) ? model : $"{provider}/{model}";
-        if (data[qualified]?["pricing"] is not JsonObject price || price["input"] is null || price["output"] is null) return null;
-        return price.Deserialize<ModelPricing>(Json);
+        return (data[qualified] as JsonObject)?["pricing"] as JsonObject;
     }
 
     public static async ValueTask<GatewayPrice?> EstimateAsync(GatewayCall call, string? upstreamModel, object? usage)

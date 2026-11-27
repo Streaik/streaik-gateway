@@ -87,7 +87,7 @@ public static partial class StreaikGateway
             format = nativeFormat.GetString() ?? format;
         await context.Response.WriteAsJsonAsync(new SpeechResponse { Audio = new() {
             Base64 = Convert.ToBase64String(buffer.GetBuffer(), 0, (int)buffer.Length), MimeType = type, Format = format },
-            ProviderMetadata = metadata,
+            ProviderMetadata = GatewayPricing.Speech(call, metadata, request.Text?.Length),
             Response = new() { ModelId = call.Model, Timestamp = DateTime.UtcNow } }, Web, call.Ct);
     }
 
@@ -109,7 +109,8 @@ public static partial class StreaikGateway
         if (request.Text is not { Length: > 0 } || request.Text.Any(x => x?.Text is null || x.ProviderOptions is not null)
             || request.Text.Select(x => x.Voice ?? request.Voice).Distinct().Count() != 1 || request.OutputFormat?.Rate is not null)
             throw new ContractException("Streaming speech supports one voice and format per request, without per-part options or a custom rate.");
-        using var upstream = await SpeakAsync(call, new() { Model = call.NativeModel, Input = string.Concat(request.Text.Select(x => x.Text)),
+        var text = string.Concat(request.Text.Select(x => x.Text));
+        using var upstream = await SpeakAsync(call, new() { Model = call.NativeModel, Input = text,
             Voice = request.Text[0].Voice ?? request.Voice, ResponseFormat = request.OutputFormat?.Type, Instructions = request.Instructions, Speed = request.Speed,
             AdditionalProperties = SpeechOptions(call, request.ProviderOptions) }, stream: true);
         var type = AudioType(upstream);
@@ -121,7 +122,7 @@ public static partial class StreaikGateway
         var format = call.ProviderId is "unrealspeech" or "bineric" or "cambai" or "addisai" or "runway" ? AudioFormatName(type) : request.OutputFormat?.Type ?? AudioFormatName(type);
         while (await stream.ReadAsync(chunk, call.Ct) is > 0 and var length)
             await Part(new SpeechAudioPart { Audio = Convert.ToBase64String(chunk, 0, length), AudioFormat = new() { Type = format } });
-        await Part(new SpeechFinishPart { ProviderMetadata = (upstream as SpeechProviderResponse)?.ProviderMetadata });
+        await Part(new SpeechFinishPart { ProviderMetadata = GatewayPricing.Speech(call, (upstream as SpeechProviderResponse)?.ProviderMetadata, text.Length) });
 
         Task Part(StreamingSpeechPart part) => GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(part, Web), null, call.Ct);
     }
@@ -219,6 +220,7 @@ public static partial class StreaikGateway
         result.Response ??= new();
         result.Response.ModelId = call.Model;
         result.Response.Timestamp = DateTime.UtcNow;
+        result.ProviderMetadata = GatewayPricing.Transcription(call, result.ProviderMetadata);
         await context.Response.WriteAsJsonAsync(result, Web, call.Ct);
     }
 
@@ -235,6 +237,8 @@ public static partial class StreaikGateway
         await foreach (var part in provider.StreamTranscriptionAsync(request, call.Headers, call.Ct).WithCancellation(call.Ct))
         {
             if (part is TranscriptionResponseMetadataPart metadata) metadata.ModelId = call.Model;
+            if (part is TranscriptionFinishPart finish)
+                finish.ProviderMetadata = GatewayPricing.Transcription(call, finish.ProviderMetadata);
             await GatewayCall.WriteFrameAsync(context.Response, JsonSerializer.Serialize(part, Web), null, call.Ct);
         }
     }

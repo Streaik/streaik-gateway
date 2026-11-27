@@ -39,7 +39,7 @@ public sealed class DecisionsTests
             }
             var response = FixtureHost.Json(router
                 ? $$$"""{"model":"{{{model}}}","answers":{"{{{questionId}}}":{"type":"noul","noul":0.9}},"usage":{"input_tokens":4,"output_tokens":0,"cost":0.01}}"""
-                : $$"""{"model":"{{model}}","answers":[{"type":"predicate","name":"flag","probability":0.9}],"usage":{"input_tokens":4,"output_tokens":0,"total_tokens":4},"future_field":true}""");
+                : $$"""{"model":"{{model}}","answers":[{"type":"predicate","name":"flag","probability":0.9}],"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7},"future_field":true}""");
             response.Headers.Add("X-Request-Id", "upstream-1");
             return response;
         }, decisions: true);
@@ -51,7 +51,8 @@ public sealed class DecisionsTests
         Assert.Equal(model, native["model"]!.GetValue<string>());
         Assert.Equal("predicate", native["answers"]![0]!["type"]!.GetValue<string>());
         Assert.Equal(0.9, native["answers"]![0]!["probability"]!.GetValue<double>());
-        Assert.Equal(4, native["usage"]!["total_tokens"]!.GetValue<int>());
+        Assert.Equal(router ? 4 : 7, native["usage"]!["total_tokens"]!.GetValue<int>());
+        Assert.Null(native["providerMetadata"]?["gateway"]);
         Assert.Null(native["state"]);
         if (router) Assert.NotNull(native["providerMetadata"]!["openrouter"]);
         else Assert.True(native["future_field"]!.GetValue<bool>());
@@ -67,6 +68,9 @@ public sealed class DecisionsTests
         Assert.Equal($"{provider}/{model}", result["response"]!["modelId"]!.GetValue<string>());
         Assert.Equal("upstream-1", result["response"]!["id"]!.GetValue<string>());
         Assert.NotNull(result["providerMetadata"]![provider]);
+        var cost = (decimal?)result["providerMetadata"]?["gateway"]?["cost"];
+        Assert.Equal(provider switch { "openai" => 0.0000004m, "openrouter" => 0.01m, _ => (decimal?)null }, cost);
+        Assert.Null(result["gateway"]);
     }
 
     [Fact]

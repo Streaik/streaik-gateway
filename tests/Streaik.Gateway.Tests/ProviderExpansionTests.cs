@@ -164,7 +164,7 @@ public sealed class ProviderExpansionTests
                 ("POST", "/v2/upload") => Upload(request),
                 ("POST", "/v2/pre-recorded") => Start(request),
                 ("GET", "/v2/pre-recorded/" + id) => FixtureHost.Json("""
-                    {"status":"done","result":{"transcription":{"full_transcript":"Bonjour","languages":["fr"],"utterances":[{"text":"Bonjour","start":0.2,"end":0.9,"speaker":0}]},"metadata":{"audio_duration":1.25}}}
+                    {"status":"done","result":{"transcription":{"full_transcript":"Bonjour","languages":["fr"],"utterances":[{"text":"Bonjour","start":0.2,"end":0.9,"speaker":0}]},"metadata":{"audio_duration":1.25,"billing_time":15}}}
                     """),
                 ("DELETE", "/v2/pre-recorded/" + id) => new(HttpStatusCode.NoContent),
                 _ => throw new InvalidOperationException("Unexpected Gladia request.")
@@ -188,7 +188,12 @@ public sealed class ProviderExpansionTests
         var segment = Assert.IsType<JsonObject>(Assert.Single(result["segments"]!.AsArray()));
         Assert.Equal(multipart ? ["end", "id", "start", "text"] : new[] { "endSecond", "startSecond", "text" },
             segment.Select(entry => entry.Key).Order(StringComparer.Ordinal));
-        if (!multipart) Assert.Equal(0, (int?)result["providerMetadata"]!["gladia"]!["utterances"]![0]!["speaker"]);
+        if (multipart) Assert.Null(result["providerMetadata"]);
+        else
+        {
+            Assert.Equal(0, (int?)result["providerMetadata"]!["gladia"]!["utterances"]![0]!["speaker"]);
+            Assert.Equal(0.000666666m, (decimal?)result["providerMetadata"]!["gateway"]!["cost"]);
+        }
         Assert.Equal(new[] { "POST", "POST", "GET", "DELETE" }, host.Requests.Select(x => x.Method));
 
         static HttpResponseMessage Upload(FixtureHost.UpstreamRequest request)

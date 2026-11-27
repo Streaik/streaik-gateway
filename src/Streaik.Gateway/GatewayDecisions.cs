@@ -24,6 +24,7 @@ public static partial class StreaikGateway
         var call = new GatewayCall(context, request.Model);
         request.Model = call.NativeModel;
         var result = await call.Require<IDecisionsProvider>().DecideAsync(request, call.Headers, call.Ct);
+        GatewayPricing.RemoveNativeCost(result.AdditionalProperties);
         await context.Response.WriteAsJsonAsync(result, JsonSerializerOptions.Web, call.Ct);
     }
 
@@ -45,6 +46,7 @@ public static partial class StreaikGateway
         }
 
         var result = await call.Require<IDecisionsProvider>().DecideAsync(request, headers, call.Ct);
+        result.ProviderMetadata = GatewayPricing.Decision(call, result);
         await context.Response.WriteAsJsonAsync(result, JsonSerializerOptions.Web, call.Ct);
     }
 }

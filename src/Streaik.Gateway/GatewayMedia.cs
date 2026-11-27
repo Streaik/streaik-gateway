@@ -106,7 +106,7 @@ public static partial class StreaikGateway
             var type = discriminator.GetString();
             if (type == "error") throw new IOException("The image stream failed.");
             // Serialize rather than forwarding raw JSON: pretty-print whitespace is not valid inside one SSE data field.
-            await GatewayCall.WriteFrameAsync(call.Context.Response, JsonSerializer.Serialize(evt, Web), type, call.Ct);
+            await GatewayCall.WriteFrameAsync(call.Context.Response, JsonSerializer.Serialize(GatewayPricing.RemoveNativeImageEventCost(evt), Web), type, call.Ct);
             if (type is "image_generation.completed" or "image_edit.completed") return;
         }
         throw new IOException("The upstream image stream ended without completion.");
@@ -114,7 +114,12 @@ public static partial class StreaikGateway
 
     private static async Task WriteImagesAsync(GatewayCall call, OpenAIImagesResponse result, bool stream, bool edit)
     {
-        if (!stream) { await call.Context.Response.WriteAsJsonAsync(result, Web, call.Ct); return; }
+        if (!stream)
+        {
+            GatewayPricing.RemoveNativeCost(result.AdditionalProperties);
+            await call.Context.Response.WriteAsJsonAsync(result, Web, call.Ct);
+            return;
+        }
         if (result.Data is not [{ B64Json: { Length: > 0 } image }])
             throw new ContractException("Image streaming requires a single base64 output.", 502);
         OpenAIImageStreamEventBase completed = edit
@@ -180,7 +185,7 @@ public static partial class StreaikGateway
         await context.Response.WriteAsJsonAsync(new ImageResponse
         {
             Images = result.Data?.Select(item => VercelImageData(item, result.OutputFormat, call.ProviderId == "digitalocean")).ToArray(),
-            ProviderMetadata = ImageAdapters.ProviderMetadata(result, call.ProviderId),
+            ProviderMetadata = GatewayPricing.Image(call, result, files is { Length: > 0 }),
             Warnings = providerWarnings,
             Response = new() { ModelId = call.Model, Timestamp = DateTime.UtcNow },
             Usage = result.Usage is { } usage ? new() { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens, TotalTokens = usage.TotalTokens } : null
@@ -238,6 +243,8 @@ public static partial class StreaikGateway
         var reference = new GatewayReferences(call, "video").Read<VideoReference>((string)context.Request.RouteValues["operation"]!);
         var result = await provider.GetVideoAsync(reference.Operation, call.Headers, call.Ct);
         result.Response.ModelId = reference.Model;
+        if (result is VideoOperationCompletedResult)
+            result.ProviderMetadata = GatewayPricing.OpenRouterUsage(call.ProviderId, result.ProviderMetadata);
         await context.Response.WriteAsJsonAsync(result, Web, call.Ct);
     }
 
@@ -275,6 +282,7 @@ public static partial class StreaikGateway
         await context.Response.WriteAsJsonAsync(new EmbeddingResponse
         {
             Embeddings = result.Data.OrderBy(item => item.Index).Select(item => item.Embedding.Deserialize<double[]>() ?? throw new JsonException()).ToArray(),
+            ProviderMetadata = GatewayPricing.Embedding(call, result),
             Usage = new() { Tokens = result.Usage.TotalTokens }, Response = metadata
         }, Web, call.Ct);
     }
@@ -289,6 +297,7 @@ public static partial class StreaikGateway
         request.Model = call.NativeModel;
         var result = await call.Require<IRerankingProvider>().RerankAsync(request, call.Headers, call.Ct);
         result.Response.ModelId = call.Model;
+        result.ProviderMetadata = GatewayPricing.OpenRouterUsage(call.ProviderId, result.ProviderMetadata);
         await context.Response.WriteAsJsonAsync(result, Web, call.Ct);
     }
 
