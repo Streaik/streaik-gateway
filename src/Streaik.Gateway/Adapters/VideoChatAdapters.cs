@@ -13,9 +13,14 @@ public static partial class StreaikGateway
 {
     private const string VideoTool = "generate_video";
 
+    private static readonly Lazy<HashSet<string>> RunwayVideoModels = new(() =>
+        (Streaik.Catalog.ProviderCatalog.ReadModels("runway")?.Deserialize<Streaik.OpenAI.Models.ModelResponse>(Web)?.Data ?? [])
+            .Where(model => model.Type == "video").Select(model => model.Id).ToHashSet(StringComparer.OrdinalIgnoreCase));
+
     private static IVideoProvider? VideoRoute(GatewayCall call)
         => call.DeapiModelType == "video" || call.ProviderId == "astria" || (call.ProviderId, call.NativeModel) is ("lumaai", "ray-3.2")
             || call.ProviderId == "agnesai" && call.NativeModel.Contains("video", StringComparison.OrdinalIgnoreCase)
+            || call.ProviderId == "runway" && (RunwayVideoModels.Value.Contains(call.Model) || call.NativeModel.StartsWith("avatar/", StringComparison.OrdinalIgnoreCase))
             ? call.Get<IVideoProvider>() : null;
 
     private static Task VideoViaVercelAsync(GatewayCall call, ChatRequest request, IVideoProvider provider)
@@ -146,7 +151,7 @@ public static partial class StreaikGateway
     {
         var input = parts.ToArray();
         var prompt = string.Join('\n', input.Select(item => item.Text).Prepend(text).Where(value => !string.IsNullOrWhiteSpace(value)));
-        Need(prompt, "prompt");
+        if (call.ProviderId != "runway") Need(prompt, "prompt");
         var files = input.Select(item => item.File).OfType<VideoFile>().ToArray();
         var image = files.FirstOrDefault(file => file.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true);
         return new() { Model = call.NativeModel, Prompt = prompt, Image = image, InputReferences = files.Where(file => file != image), ProviderOptions = options };

@@ -58,7 +58,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool avianFishAudioLumaAI = false, bool augureCognitivessAIHorde = false, bool tikHubAIWellSaidYollomi = false,
         bool commonstackLeonardoNeuphonic = false, bool baseApiByteSpaceCambai = false, bool aiBramhaReveAddisAI = false,
         bool antimatterMurfAIPicsart = false, bool inceptionRavenResemble = false, bool aivaraApekeyDeapi = false,
-        bool askArcAgnesSoniox = false)
+        bool askArcAgnesSoniox = false, bool anyRouterAetherRunway = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -103,6 +103,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (inceptionRavenResemble) builder.Services.AddInceptionLabs().AddRaven().AddResembleAI();
         if (aivaraApekeyDeapi) builder.Services.AddAivara().AddApekey().AddDeAPI();
         if (askArcAgnesSoniox) builder.Services.AddAskARC().AddAgnesAI().AddSoniox();
+        if (anyRouterAetherRunway) builder.Services.AddAnyRouter().AddAether().AddRunway();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -143,6 +144,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (inceptionRavenResemble) ids.AddRange(["inceptionlabs", "raven", "resembleai"]);
         if (aivaraApekeyDeapi) ids.AddRange(["aivara", "apekey", "deapi", "deapi-assets"]);
         if (askArcAgnesSoniox) ids.AddRange(["askarc", "agnesai", "agnesai-delivery", "soniox", "soniox-speech"]);
+        if (anyRouterAetherRunway) ids.AddRange(["anyrouter", "aether", "aether-delivery", "runway", "runway-delivery"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

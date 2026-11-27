@@ -79,7 +79,7 @@ public static partial class StreaikGateway
             buffer.Write(chunk, 0, length);
         }
         var metadata = (upstream as SpeechProviderResponse)?.ProviderMetadata;
-        var format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" or "bineric" or "stabilityai" or "cambai" or "addisai" or "murfai" or "resembleai"
+        var format = call.ProviderId is "astica" or "unrealspeech" or "edgespeak" or "speechmatics" or "bineric" or "stabilityai" or "cambai" or "addisai" or "murfai" or "resembleai" or "runway"
             ? AudioFormatName(type) : request.OutputFormat ?? AudioFormatName(type);
         if (call.ProviderId is "rime" or "neuphonic" && metadata?.TryGetValue(call.ProviderId, out var native) == true
             && native.ValueKind == JsonValueKind.Object && native.TryGetProperty("audioFormat", out var nativeFormat)
@@ -118,7 +118,7 @@ public static partial class StreaikGateway
         await Part(new SpeechResponseMetadataPart { ModelId = call.Model, Timestamp = DateTime.UtcNow });
         await using var stream = await upstream.Content.ReadAsStreamAsync(call.Ct);
         var chunk = new byte[16384];
-        var format = call.ProviderId is "unrealspeech" or "bineric" or "cambai" or "addisai" ? AudioFormatName(type) : request.OutputFormat?.Type ?? AudioFormatName(type);
+        var format = call.ProviderId is "unrealspeech" or "bineric" or "cambai" or "addisai" or "runway" ? AudioFormatName(type) : request.OutputFormat?.Type ?? AudioFormatName(type);
         while (await stream.ReadAsync(chunk, call.Ct) is > 0 and var length)
             await Part(new SpeechAudioPart { Audio = Convert.ToBase64String(chunk, 0, length), AudioFormat = new() { Type = format } });
         await Part(new SpeechFinishPart { ProviderMetadata = (upstream as SpeechProviderResponse)?.ProviderMetadata });
@@ -169,17 +169,17 @@ public static partial class StreaikGateway
         var format = form["response_format"].ToString();
         if (format is not ("" or "json" or "text" or "verbose_json")) throw new ContractException("Unsupported transcription response format.");
         var stream = form["stream"] == "true";
-        if (stream && call.ProviderId is not ("bineric" or "cambai" or "addisai" or "resembleai" or "soniox")) throw new ContractException("Use the streaming transcription route.");
+        if (stream && call.ProviderId is not ("bineric" or "cambai" or "addisai" or "resembleai" or "soniox" or "aether")) throw new ContractException("Use the streaming transcription route.");
         if (stream && format is not ("" or "json")) throw new ContractException("Streaming transcription requires JSON response format.");
         var options = form.Where(k => k.Key is not ("model" or "file" or "language" or "response_format" or "stream"))
             .ToDictionary(k => k.Key, k => JsonSerializer.SerializeToElement(k.Value.ToString()));
-        if (call.ProviderId == "soniox")
+        if (call.ProviderId is "soniox" or "aether")
         {
             // Multipart uses text fields. Decode the structured native options without changing other providers' handling.
             foreach (var key in options.Keys.ToArray())
             {
-                if (key is not ("providerOptions" or "soniox" or "context" or "language_hints" or "language_hints_strict"
-                    or "enable_speaker_diarization" or "enable_language_identification")) continue;
+                if (key != "providerOptions" && key != call.ProviderId && (call.ProviderId != "soniox"
+                    || key is not ("context" or "language_hints" or "language_hints_strict" or "enable_speaker_diarization" or "enable_language_identification"))) continue;
                 try { options[key] = JsonSerializer.Deserialize<JsonElement>(options[key].GetString()!); }
                 catch (JsonException) { throw new ContractException($"'{key}' must be valid JSON."); }
             }

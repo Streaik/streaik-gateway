@@ -154,7 +154,7 @@ public static partial class StreaikGateway
         if (!clarifai && request.AspectRatio is not null && (call.ProviderId != "segmind" || !body.ContainsKey("aspect_ratio"))) body["aspect_ratio"] = request.AspectRatio;
         if (!clarifai && request.Seed is { } seed && (call.ProviderId != "segmind" || !body.ContainsKey("seed"))) body["seed"] = seed;
         OpenAIImagesResponse result;
-        if (files is { Length: > 0 })
+        if (files is { Length: > 0 } && (call.ProviderId != "aether" || request.Mask is not null))
         {
             var edit = BindImageSettings<OpenAIImageEditRequest>(body);
             edit.Images = files;
@@ -171,6 +171,12 @@ public static partial class StreaikGateway
             ? warnings.EnumerateArray().Select(static item => (object)item).ToList() : [];
         if (clarifai && request.Seed.HasValue) providerWarnings.Add(new { type = "unsupported", feature = "seed" });
         if (clarifai && !string.IsNullOrWhiteSpace(request.AspectRatio)) providerWarnings.Add(new { type = "unsupported", feature = "aspectRatio" });
+        if (call.ProviderId == "aether")
+        {
+            if (files is { Length: > 0 }) providerWarnings.Add(new { type = "unsupported", feature = "files" });
+            if (request.Seed.HasValue) providerWarnings.Add(new { type = "unsupported", feature = "seed" });
+            if (!string.IsNullOrWhiteSpace(request.AspectRatio)) providerWarnings.Add(new { type = "unsupported", feature = "aspectRatio" });
+        }
         await context.Response.WriteAsJsonAsync(new ImageResponse
         {
             Images = result.Data?.Select(item => VercelImageData(item, result.OutputFormat, call.ProviderId == "digitalocean")).ToArray(),
@@ -213,7 +219,7 @@ public static partial class StreaikGateway
         var request = await ReadAsync<VideoRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
         // AtlasCloud accepts image-only inputs. Bria and Decart validate workflow-specific prompts; FLUX editing takes a video or draft cache.
-        if (call.ProviderId is not ("atlascloud" or "bria" or "decart") && (call.ProviderId != "blackforestlabs"
+        if (call.ProviderId is not ("atlascloud" or "bria" or "decart" or "runway") && (call.ProviderId != "blackforestlabs"
             || call.NativeModel.ToLowerInvariant() is not ("flux-3-video-draft-enhance" or "flux-tools/video-upscale-v1")))
             Need(request.Prompt, "prompt");
         var provider = call.Require<IVideoProvider>();
