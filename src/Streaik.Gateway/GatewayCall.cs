@@ -13,6 +13,8 @@ namespace Streaik.Gateway;
 
 internal sealed class GatewayCall
 {
+    private const string StreamErrorMessage = "The upstream stream ended unexpectedly.";
+
     public GatewayCall(HttpContext context, string? model)
     {
         Context = context;
@@ -57,6 +59,29 @@ internal sealed class GatewayCall
     public T Require<T>() where T : class => Get<T>() ?? throw new ContractException("Provider does not support this protocol.");
     private GatewayPerformance Measure() => new(Context.RequestServices.GetService<TimeProvider>() ?? TimeProvider.System);
 
+    internal static string? SafeProviderMessage(HttpContext context, string? message)
+    {
+        if (message is null) return null;
+        var credentials = context.Request.Headers.Where(header => ProviderErrorText.IsCredentialHeader(header.Key))
+            .SelectMany(header => header.Value).OfType<string>().SelectMany(ProviderErrorText.CredentialValues);
+        if (context.Items.TryGetValue(GatewayHeaderAuth.ActiveProvider, out var active) && active is string provider
+            && context.RequestServices.GetService<IProviderCredentials>()?.GetApiKey(provider) is { } key)
+            credentials = credentials.Append(key);
+        return ProviderErrorText.Sanitize(message, credentials);
+    }
+
+    internal static string? ResponseErrorMessage(ResponseError error) => !string.IsNullOrWhiteSpace(error.Message) ? error.Message
+        : error.AdditionalProperties?.TryGetValue("error", out var nested) == true ? ProviderErrorText.Message(nested) : null;
+
+    private void SanitizeResponseError(ResponseResult response)
+    {
+        if (response.Error is not { } error) return;
+        error.Message = SafeProviderMessage(Context, error.Message) ?? StreamErrorMessage;
+        error.Code = SafeProviderMessage(Context, error.Code);
+        error.Param = SafeProviderMessage(Context, error.Param);
+        error.Type = SafeProviderMessage(Context, error.Type);
+    }
+
     public async Task WriteAsync(ChatCompletion result)
     {
         var cost = await GatewayPricing.EstimateAsync(this, result.Model, result.Usage);
@@ -68,6 +93,7 @@ internal sealed class GatewayCall
 
     public async Task WriteAsync(ResponseResult result, GatewayContainerArtifacts.Turn? artifacts = null)
     {
+        SanitizeResponseError(result);
         GatewayPricing.Attach(result, await GatewayPricing.EstimateAsync(this, result.Model, result.Usage));
         GatewayContainerArtifacts.AddResponseReferences(this, result);
         if (artifacts is not null && result.Status is "completed" or "incomplete")
@@ -94,8 +120,8 @@ internal sealed class GatewayCall
         string? upstreamModel = null;
         await foreach (var part in source.WithCancellation(Ct))
         {
-            if (part.AdditionalProperties?.ContainsKey("error") == true)
-                throw new IOException("Chat Completions returned a stream error.");
+            if (part.AdditionalProperties?.TryGetValue("error", out var error) == true)
+                throw new UpstreamStreamException(ProviderErrorText.Message(error));
             upstreamModel = part.Model ?? upstreamModel;
             if (part.Usage is not null)
                 part.AdditionalProperties = GatewayPricing.AttachChat(part.AdditionalProperties,
@@ -118,6 +144,13 @@ internal sealed class GatewayCall
         var performance = Measure();
         await foreach (var part in source.WithCancellation(Ct))
         {
+            if (part is ResponseError error)
+            {
+                await WriteResponseEventAsync(new ResponseError { SequenceNumber = error.SequenceNumber,
+                    Message = SafeProviderMessage(Context, ResponseErrorMessage(error)) ?? StreamErrorMessage,
+                    Code = SafeProviderMessage(Context, error.Code), Param = SafeProviderMessage(Context, error.Param), ResponseId = error.ResponseId });
+                return;
+            }
             artifacts?.Observe(part);
             var outbound = part;
             var response = part switch
@@ -127,6 +160,7 @@ internal sealed class GatewayCall
             };
             if (response is not null)
             {
+                if (part is ResponseFailed) SanitizeResponseError(response);
                 if (part is ResponseCompleted or ResponseIncompleteEvent)
                 {
                     GatewayPricing.Attach(response, await GatewayPricing.EstimateAsync(this, response.Model, response.Usage));
@@ -145,6 +179,7 @@ internal sealed class GatewayCall
             }
             performance.Observe(part, response);
             await WriteResponseEventAsync(outbound);
+            if (part is ResponseFailed) return;
         }
     }
 
@@ -180,6 +215,16 @@ internal sealed class GatewayCall
         GatewayPrice? reportedCost = null;
         await foreach (var part in source.WithCancellation(Ct))
         {
+            if (part.Type == "error")
+            {
+                var error = new MessageStreamPart { Type = "error", Error = new MessageStreamError
+                {
+                    Type = SafeProviderMessage(Context, part.Error?.Type) ?? "api_error",
+                    Message = SafeProviderMessage(Context, part.Error?.Message) ?? StreamErrorMessage
+                } };
+                await WriteFrameAsync(Context.Response, JsonSerializer.Serialize(error, MessagesJson.Default), error.Type, Ct);
+                return;
+            }
             if (part.Message is { } message)
             {
                 upstreamModel = message.Model;
@@ -248,9 +293,9 @@ internal sealed class GatewayCall
             : context.Response.WriteAsJsonAsync(new { error }, context.RequestAborted);
     }
 
-    public static async Task StreamErrorAsync(HttpContext context, Protocol protocol)
+    public static async Task StreamErrorAsync(HttpContext context, Protocol protocol, string? diagnostic)
     {
-        const string message = "The upstream stream ended unexpectedly.";
+        var message = diagnostic ?? StreamErrorMessage;
         var ct = context.RequestAborted;
         var error = new { type = "api_error", message };
         var payload = protocol switch

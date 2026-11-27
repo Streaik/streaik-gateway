@@ -161,7 +161,8 @@ internal static partial class ProtocolAdapters
                     if (includeUsage) yield return new ChatCompletionUpdate { Id = id, Model = model!, Created = created, Usage = ChatUsage(usage),
                         AdditionalProperties = GatewayPricing.AttachChat(null, cost) };
                     yield break;
-                case { Type: "error" or "content_block_start" or "content_block_delta" }:
+                case { Type: "error" }: throw new UpstreamStreamException(part.Error?.Message);
+                case { Type: "content_block_start" or "content_block_delta" }:
                     throw new IOException("This Messages event cannot be represented as Chat Completions.");
             }
         }

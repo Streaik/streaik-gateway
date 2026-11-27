@@ -85,7 +85,7 @@ internal static partial class ProtocolAdapters
     private static MessagesResponse ToMessages(ResponseResult result)
     {
         if (result.Status is "failed" or "cancelled" || result.Error is not null)
-            throw new IOException("Responses did not complete successfully.");
+            throw new UpstreamStreamException(result.Error?.Message);
         var content = new List<MessageContentBlock>();
         foreach (var item in result.OutputItems)
         {
@@ -181,8 +181,8 @@ internal static partial class ProtocolAdapters
                         yield return Delta(i, new MessageStreamDelta { Type = "input_json_delta", PartialJson = arguments.ValueKind == JsonValueKind.String
                             ? arguments.GetString() : arguments.GetRawText() });
                     yield return End(i); break;
-                case ResponseFailed or ResponseError:
-                    throw new IOException("Responses returned a stream error.");
+                case ResponseError error: throw new UpstreamStreamException(GatewayCall.ResponseErrorMessage(error));
+                case ResponseFailed failed: throw new UpstreamStreamException(failed.Response?.Error?.Message);
             }
             var result = ev switch { ResponseCompleted completed => completed.Response, ResponseIncompleteEvent incomplete => incomplete.Response, _ => null };
             if (result is null) continue;

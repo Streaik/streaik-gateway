@@ -235,25 +235,44 @@ public static partial class StreaikGateway
         var ct = context.RequestAborted;
         try { await run(context); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (ContractException error) when (!context.Response.HasStarted)
-        { await GatewayCall.ErrorAsync(context, protocol, error.Status, error.Message); }
-        catch (ProviderCredentialException error) when (!context.Response.HasStarted)
-        { await GatewayCall.ErrorAsync(context, protocol, 401, error.Message); }
-        catch (ProviderRequestException error) when (!context.Response.HasStarted)
-        { await GatewayCall.ErrorAsync(context, protocol, error.Status, error.Message); }
-        catch (HttpRequestException error) when (!context.Response.HasStarted && (int?)error.StatusCode >= 400)
-        { await GatewayCall.ErrorAsync(context, protocol, (int)error.StatusCode!.Value, "The upstream provider rejected the request."); }
         catch (Exception error) when (error is HttpRequestException or JsonException or IOException or OperationCanceledException
-            or ContractException or ProviderRequestException or System.Net.WebSockets.WebSocketException)
+            or ContractException or ProviderCredentialException or ProviderRequestException or System.Net.WebSockets.WebSocketException)
         {
             if (ct.IsCancellationRequested) return;
-            if (!context.Response.HasStarted) await GatewayCall.ErrorAsync(context, protocol, 502, "The upstream response could not be read.");
-            else await GatewayCall.StreamErrorAsync(context, protocol);
+            var diagnostic = error switch
+            {
+                UpstreamHttpException upstream => GatewayCall.SafeProviderMessage(context, upstream.Diagnostic),
+                UpstreamStreamException upstream => GatewayCall.SafeProviderMessage(context, upstream.Diagnostic),
+                ProviderRequestException => GatewayCall.SafeProviderMessage(context, error.Message),
+                ContractException or ProviderCredentialException => error.Message,
+                _ => null
+            };
+            if (context.Response.HasStarted)
+            {
+                if (context.Response.ContentType == EventStreamMediaType) await GatewayCall.StreamErrorAsync(context, protocol, diagnostic);
+                else context.Abort(); // Never append an SSE frame to a binary response.
+                return;
+            }
+            var (status, fallback) = error switch
+            {
+                ContractException contract => (contract.Status, contract.Message),
+                ProviderCredentialException => (401, error.Message),
+                ProviderRequestException provider => (provider.Status, "The upstream provider rejected the request."),
+                HttpRequestException http when (int?)http.StatusCode >= 400 =>
+                    ((int)http.StatusCode!.Value, "The upstream provider rejected the request."),
+                _ => (502, "The upstream response could not be read.")
+            };
+            await GatewayCall.ErrorAsync(context, protocol, status, diagnostic ?? fallback);
         }
     }
 }
 
 internal enum Protocol { Chat, Responses, Messages, Vercel }
+internal sealed class UpstreamStreamException(string? diagnostic) : IOException("The upstream reported an error.")
+{
+    internal string? Diagnostic { get; } = diagnostic;
+}
+
 internal sealed class ContractException(string message, int status = 400) : Exception(message)
 {
     public int Status { get; } = status;

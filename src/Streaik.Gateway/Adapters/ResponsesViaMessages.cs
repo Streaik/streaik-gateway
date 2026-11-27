@@ -225,7 +225,8 @@ internal static partial class ProtocolAdapters
                     yield return result.Status == "incomplete" ? new ResponseIncompleteEvent { SequenceNumber = sequence++, Response = result }
                         : new ResponseCompleted { SequenceNumber = sequence++, Response = result };
                     yield break;
-                case { Type: "error" or "content_block_start" or "content_block_delta" }:
+                case { Type: "error" }: throw new UpstreamStreamException(part.Error?.Message);
+                case { Type: "content_block_start" or "content_block_delta" }:
                     throw new IOException("This Messages event cannot be represented as Responses output.");
             }
         }

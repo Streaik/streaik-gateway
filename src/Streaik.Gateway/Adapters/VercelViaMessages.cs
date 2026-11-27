@@ -259,7 +259,7 @@ internal static partial class VercelAdapter
                         call.ProviderId, JsonSerializer.SerializeToElement(usage, MessagesJson.Default), metadata,
                         cost: await GatewayPricing.EstimateAsync(call, upstreamModel, usage));
                     yield break;
-                case { Type: "error" }: throw new IOException("Messages returned a stream error.");
+                case { Type: "error" }: throw new UpstreamStreamException(part.Error?.Message);
             }
         }
         throw new IOException("Messages ended without message_stop.");

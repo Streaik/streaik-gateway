@@ -332,7 +332,8 @@ internal static partial class VercelAdapter
                         ToolMetadata = item.Namespace is { } space ? new() { ["namespace"] = JsonSerializer.SerializeToElement(space) } : null,
                         Input = item.Arguments is { ValueKind: JsonValueKind.String } args ? MessagesHistory.ParseArguments(args.GetString()!) : ToolInput(item.Arguments) };
                     break;
-                case ResponseError or ResponseFailed: throw new IOException("Responses returned a stream error.");
+                case ResponseError error: throw new UpstreamStreamException(GatewayCall.ResponseErrorMessage(error));
+                case ResponseFailed failed: throw new UpstreamStreamException(failed.Response?.Error?.Message);
             }
 
             var result = ev switch { ResponseCompleted completed => completed.Response, ResponseIncompleteEvent incomplete => incomplete.Response, _ => null };

@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Streaik.ChatCompletions.Models;
 using Streaik.Messages;
+using Streaik.Providers;
 
 namespace Streaik.Gateway;
 
@@ -120,7 +121,9 @@ internal static class ChatCompletionsBridge
 
     public static MessagesResponse Result(ChatCompletion result, string? metadataProvider = null)
     {
-        if (result.AdditionalProperties?.ContainsKey("error") == true || result.Choices?.FirstOrDefault(choice => choice.Index == 0) is not { } choice
+        if (result.AdditionalProperties?.TryGetValue("error", out var error) == true)
+            throw new UpstreamStreamException(ProviderErrorText.Message(error));
+        if (result.Choices?.FirstOrDefault(choice => choice.Index == 0) is not { } choice
             || choice.Message is not { } message || message.FunctionCall is not null || message.Audio is not null)
             throw new IOException("Invalid Chat Completions result.");
         List<MessageContentBlock> blocks = [];
@@ -163,7 +166,8 @@ internal static class ChatCompletionsBridge
         List<object>? nativeDeltas = preserveNativeFields ? [] : null;
         await foreach (var part in source)
         {
-            if (part.AdditionalProperties?.ContainsKey("error") == true) throw new IOException("Chat Completions returned a stream error.");
+            if (part.AdditionalProperties?.TryGetValue("error", out var error) == true)
+                throw new UpstreamStreamException(ProviderErrorText.Message(error));
             if (nativeFields is not null && part.AdditionalProperties is { } extra)
                 foreach (var (name, value) in extra) nativeFields[name] = value;
             usage = part.Usage ?? usage;

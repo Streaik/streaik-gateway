@@ -16,6 +16,7 @@ public sealed class GatewayTests
     private const string Messages = "/v1/messages";
     private const string Vercel = "/api/chat";
     private const string Models = "/v1/models";
+    private const string InvalidOption = "Unsupported parameter: reasoning.effort is not supported with this model.";
 
     [Theory]
     [InlineData("openai", Chat, Chat, false)]
@@ -185,6 +186,64 @@ public sealed class GatewayTests
         Assert.Equal(HttpStatusCode.TooManyRequests, rate.StatusCode);
         Assert.Equal("application/json", rate.Content.Headers.ContentType?.MediaType);
         Assert.False(rate.Headers.Contains("x-vercel-ai-ui-message-stream"));
+        Assert.Equal("fixture", JsonNode.Parse(await rate.Content.ReadAsStringAsync())?["error"]?["message"]?.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData(Chat, "openai", false)]
+    [InlineData(Responses, "openai", true)]
+    [InlineData(Vercel, "openai", true)]
+    [InlineData(Messages, "anthropic", true)]
+    public async Task Provider_rejection_keeps_status_envelope_and_message(string route, string provider, bool stream)
+    {
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json(
+            $$$"""{"error":{"message":"{{{InvalidOption}}}","type":"invalid_request_error","debug":"not for clients"}}""", HttpStatusCode.BadRequest));
+        using var response = await host.PostAsync(route, Request(route, $"{provider}/model", stream).ToJsonString(),
+            ChatHeaders(provider, ($"X-{provider}-Key", "fixture-key")));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        Assert.False(response.Headers.Contains("x-vercel-ai-ui-message-stream"));
+        var body = await response.Content.ReadAsStringAsync();
+        var json = JsonNode.Parse(body)!;
+        Assert.Equal(route == Messages ? "error" : null, json["type"]?.GetValue<string>());
+        Assert.Equal("invalid_request_error", json["error"]?["type"]?.GetValue<string>());
+        Assert.Equal(InvalidOption, json["error"]?["message"]?.GetValue<string>());
+        Assert.DoesNotContain("not for clients", body);
+    }
+
+    [Theory]
+    [InlineData("<html>private contents</html>", "The upstream provider rejected the request.")]
+    [InlineData("""{"error":{"message":"\uD800"}}""", "The upstream provider rejected the request.")]
+    [InlineData("""{"error":{"message":"API key fixture-secret-123 is invalid."}}""", "API key [redacted] is invalid.")]
+    public async Task Provider_error_bodies_do_not_expose_raw_contents_or_credentials(string upstream, string expected)
+    {
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json(upstream, HttpStatusCode.Unauthorized));
+        using var response = await host.PostAsync(Vercel, Request(Vercel, "openai/model", true).ToJsonString(), ("X-OpenAI-Key", "fixture-secret-123"));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(expected, JsonNode.Parse(body)?["error"]?["message"]?.GetValue<string>());
+        Assert.DoesNotContain("fixture-secret-123", body);
+    }
+
+    [Theory]
+    [InlineData("error", false)]
+    [InlineData("error", true)]
+    [InlineData("response.failed", true)]
+    public async Task Api_chat_reports_responses_stream_errors_after_partial_output(string type, bool nested)
+    {
+        var error = type == "response.failed"
+            ? $$$$"""{"type":"response.failed","sequence_number":3,"response":{"id":"resp_1","model":"model","status":"failed","output":[],"error":{"message":"{{{{InvalidOption}}}}"}}}"""
+            : nested ? $$$"""{"type":"error","sequence_number":3,"error":{"message":"{{{InvalidOption}}}"}}"""
+                : $$"""{"type":"error","sequence_number":3,"message":"{{InvalidOption}}"}""";
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Sse(
+            """{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","model":"model","status":"in_progress","output":[]}}""",
+            """{"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_r","content_index":0,"output_index":0,"delta":"partial reply"}""", error));
+        using var response = await host.PostAsync(Vercel, Request(Vercel, "openai/model", true).ToJsonString(), ("X-OpenAI-Key", "fixture-key"));
+        var sse = await Success(response);
+        Assert.Contains("partial reply", sse);
+        Assert.Equal(InvalidOption, Part(sse, "error")["errorText"]?.GetValue<string>());
+        Assert.DoesNotContain("\"type\":\"finish\"", sse);
+        Assert.EndsWith("data: [DONE]\n\n", sse);
     }
 
     [Fact]
