@@ -17,13 +17,16 @@ public sealed class MediaTests
     private static readonly (string, string) GeminiKey = ("X-Google-Key", "gemini-fixture-key");
 
     [Theory]
-    [InlineData("/v1/images/generations", false)]
-    [InlineData("/api/images", true)]
-    public async Task Google_generation_routes_send_a_Gemini_image_interaction(string path, bool vercel)
+    [InlineData("/v1/images/generations", null)]
+    [InlineData("/api/images", null)]
+    [InlineData("/api/images", "image/png")]
+    public async Task Google_generation_defaults_to_JPEG_and_prefers_the_response_mime_type(string path, string? responseMime)
     {
-        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""
+        var image = new JsonObject { ["type"] = "image", ["data"] = "AQID" };
+        if (responseMime is not null) image["mime_type"] = responseMime;
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json($$"""
             {"steps":[{"type":"model_output","content":[{"type":"text","text":"Image follows."},
-              {"type":"image","mime_type":"image/jpeg","data":"AQID"}]}]}
+              {{image}}]}]}
             """), liveProviders: true);
         using var response = await host.PostAsync(path, GeminiImageRequest, GeminiKey);
         var body = JsonNode.Parse(await GatewayTests.Success(response))!;
@@ -35,14 +38,72 @@ public sealed class MediaTests
         Assert.Equal("application/json", request.Headers["Accept"]);
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""
             {"model":"gemini-2.5-flash-image","input":[{"type":"text","text":"simple afbeelding huis en een boom"}],
-             "response_format":{"type":"image","mime_type":"image/png"},"store":false}
+             "response_format":{"type":"image","mime_type":"image/jpeg"},"store":false}
             """), request.Body), request.RawBody);
-        if (vercel) Assert.Equal("data:image/jpeg;base64,AQID", (string?)body["images"]![0]);
+        if (path == "/api/images") Assert.Equal($"data:{responseMime ?? "image/jpeg"};base64,AQID", (string?)body["images"]![0]);
         else
         {
             Assert.Equal("AQID", (string?)body["data"]![0]!["b64_json"]);
             Assert.Equal("jpeg", (string?)body["output_format"]);
         }
+    }
+
+    [Theory]
+    [InlineData("/api/images", """{"prompt":"edit","size":"1K","aspectRatio":"16:9","files":[{"type":"file","mediaType":"image/png","data":"AQID"}]}""")]
+    [InlineData("/v1/images/edits", """{"prompt":"edit","size":"1K","aspect_ratio":"16:9","images":[{"image_url":"data:image/png;base64,AQID"}],"output_format":null}""")]
+    public async Task Google_edits_default_to_JPEG_without_changing_the_input_format(string path, string payload)
+    {
+        var body = JsonNode.Parse(payload)!.AsObject();
+        body["model"] = "google/gemini-2.5-flash-image";
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""
+            {"steps":[{"type":"model_output","content":[{"type":"image","mime_type":"image/jpeg","data":"BAUG"}]}]}
+            """), liveProviders: true);
+        using var response = await host.PostAsync(path, body.ToJsonString(), GeminiKey);
+        var result = JsonNode.Parse(await GatewayTests.Success(response))!;
+        var request = Assert.Single(host.Requests);
+        Assert.Equal("/v1beta/interactions", request.Path);
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""
+            {"model":"gemini-2.5-flash-image","input":[{"type":"text","text":"edit"},{"type":"image","mime_type":"image/png","data":"AQID"}],
+             "response_format":{"type":"image","mime_type":"image/jpeg","aspect_ratio":"16:9","image_size":"1K"},"store":false}
+            """), request.Body), request.RawBody);
+        if (path == "/api/images") Assert.Equal("data:image/jpeg;base64,BAUG", (string?)result["images"]![0]);
+        else
+        {
+            Assert.Equal("BAUG", (string?)result["data"]![0]!["b64_json"]);
+            Assert.Equal("jpeg", (string?)result["output_format"]);
+        }
+    }
+
+    [Theory]
+    [InlineData("/api/images")]
+    [InlineData("/v1/images/generations")]
+    public async Task Google_generation_preserves_explicit_output_format(string path)
+    {
+        var body = JsonNode.Parse(GeminiImageRequest)!.AsObject();
+        if (path == "/api/images") body["providerOptions"] = JsonNode.Parse("""{"google":{"output_format":"png"}}""");
+        else body["output_format"] = "png";
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""
+            {"steps":[{"type":"model_output","content":[{"type":"image","data":"AQID"}]}]}
+            """), liveProviders: true);
+        using var response = await host.PostAsync(path, body.ToJsonString(), GeminiKey);
+        var result = JsonNode.Parse(await GatewayTests.Success(response))!;
+        Assert.Equal("image/png", (string?)Assert.Single(host.Requests).Body!["response_format"]!["mime_type"]);
+        if (path == "/api/images") Assert.Equal("data:image/png;base64,AQID", (string?)result["images"]![0]);
+        else Assert.Equal("png", (string?)result["output_format"]);
+    }
+
+    [Fact]
+    public async Task Google_Imagen_retains_its_PNG_default()
+    {
+        await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json("""
+            {"predictions":[{"bytesBase64Encoded":"AQID"}]}
+            """), liveProviders: true);
+        using var response = await host.PostAsync("/api/images", """{"model":"google/imagen-4.0-generate-001","prompt":"draw"}""", GeminiKey);
+        var result = JsonNode.Parse(await GatewayTests.Success(response))!;
+        var request = Assert.Single(host.Requests);
+        Assert.Equal("/v1beta/models/imagen-4.0-generate-001:predict", request.Path);
+        Assert.Equal("image/png", (string?)request.Body!["parameters"]!["outputOptions"]!["mimeType"]);
+        Assert.Equal("data:image/png;base64,AQID", (string?)result["images"]![0]);
     }
 
     [Theory]
