@@ -57,7 +57,8 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool abliterationAIMagicxSpeechmatics = false, bool dandoloBinericAstria = false, bool asiOneRimeStabilityAI = false,
         bool avianFishAudioLumaAI = false, bool augureCognitivessAIHorde = false, bool tikHubAIWellSaidYollomi = false,
         bool commonstackLeonardoNeuphonic = false, bool baseApiByteSpaceCambai = false, bool aiBramhaReveAddisAI = false,
-        bool antimatterMurfAIPicsart = false, bool inceptionRavenResemble = false, bool aivaraApekeyDeapi = false)
+        bool antimatterMurfAIPicsart = false, bool inceptionRavenResemble = false, bool aivaraApekeyDeapi = false,
+        bool askArcAgnesSoniox = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -101,6 +102,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (antimatterMurfAIPicsart) builder.Services.AddAntimatter().AddMurfAI().AddPicsart();
         if (inceptionRavenResemble) builder.Services.AddInceptionLabs().AddRaven().AddResembleAI();
         if (aivaraApekeyDeapi) builder.Services.AddAivara().AddApekey().AddDeAPI();
+        if (askArcAgnesSoniox) builder.Services.AddAskARC().AddAgnesAI().AddSoniox();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -140,6 +142,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (antimatterMurfAIPicsart) ids.AddRange(["antimatter", "murfai", "picsart"]);
         if (inceptionRavenResemble) ids.AddRange(["inceptionlabs", "raven", "resembleai"]);
         if (aivaraApekeyDeapi) ids.AddRange(["aivara", "apekey", "deapi", "deapi-assets"]);
+        if (askArcAgnesSoniox) ids.AddRange(["askarc", "agnesai", "agnesai-delivery", "soniox", "soniox-speech"]);
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

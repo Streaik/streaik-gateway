@@ -169,10 +169,21 @@ public static partial class StreaikGateway
         var format = form["response_format"].ToString();
         if (format is not ("" or "json" or "text" or "verbose_json")) throw new ContractException("Unsupported transcription response format.");
         var stream = form["stream"] == "true";
-        if (stream && call.ProviderId is not ("bineric" or "cambai" or "addisai" or "resembleai")) throw new ContractException("Use the streaming transcription route.");
+        if (stream && call.ProviderId is not ("bineric" or "cambai" or "addisai" or "resembleai" or "soniox")) throw new ContractException("Use the streaming transcription route.");
         if (stream && format is not ("" or "json")) throw new ContractException("Streaming transcription requires JSON response format.");
         var options = form.Where(k => k.Key is not ("model" or "file" or "language" or "response_format" or "stream"))
             .ToDictionary(k => k.Key, k => JsonSerializer.SerializeToElement(k.Value.ToString()));
+        if (call.ProviderId == "soniox")
+        {
+            // Multipart uses text fields. Decode the structured native options without changing other providers' handling.
+            foreach (var key in options.Keys.ToArray())
+            {
+                if (key is not ("providerOptions" or "soniox" or "context" or "language_hints" or "language_hints_strict"
+                    or "enable_speaker_diarization" or "enable_language_identification")) continue;
+                try { options[key] = JsonSerializer.Deserialize<JsonElement>(options[key].GetString()!); }
+                catch (JsonException) { throw new ContractException($"'{key}' must be valid JSON."); }
+            }
+        }
         await using var audio = file.OpenReadStream();
         var result = await call.Require<ITranscriptionProvider>().TranscribeAsync(call.NativeModel, audio, file.ContentType, file.FileName,
             form["language"], options, call.Headers, call.Ct);
