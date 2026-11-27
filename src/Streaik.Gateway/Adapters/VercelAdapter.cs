@@ -20,19 +20,26 @@ internal static partial class VercelAdapter
         "authorization", "api_key", "apiKey", "x-api-key", "headers"
     };
 
-    public static async Task RunAsync(GatewayCall call, ChatRequest request, HostedToolDefinition[]? hosted = null)
+    public static async Task RunAsync(GatewayCall call, ChatRequest request, HostedToolDefinition[]? hosted = null, McpToolDefinition[]? providerMcp = null)
     {
         var services = call.Context.RequestServices;
         var signer = services.GetService<ToolApprovalSigner>();
         var converted = request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>().Any(UpstreamMcpReview.IsReview);
         var upstreamReviews = services.GetService<HostedToolsEnabled>() is not null;
-        var nativeResponses = !call.PreferChatBridge && call.Get<IResponsesProvider>() is not null;
+        var nativeResponses = (!call.PreferChatBridge || providerMcp is { Length: > 0 }) && call.Get<IResponsesProvider>() is not null;
+        var messagesMcp = !nativeResponses && providerMcp is { Length: > 0 } && call.ProviderId == "anthropic" && call.Get<IMessagesProvider>() is not null;
+        if (providerMcp is { Length: > 0 } && !nativeResponses && !messagesMcp)
+            throw new ContractException("The selected provider route cannot forward provider-executed MCP.", 422);
+        if (messagesMcp && hosted is { Length: > 0 })
+            throw new ContractException("Anthropic Messages cannot mix provider MCP with Gateway-hosted tools on this route.", 422);
         if (converted && ((!nativeResponses && hosted is not { Length: > 0 }) || !upstreamReviews))
             throw new ContractException("This route cannot continue the MCP result review.", 422);
         var reviews = request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>()
             .Where(tool => tool.Approval is not null || tool.State is "approval-requested" or "approval-responded").ToList();
-        if (reviews.Any(tool => tool.ProviderExecuted == true && !UpstreamMcpReview.IsReview(tool)))
+        if (reviews.Any(tool => tool.ProviderExecuted == true && !UpstreamMcpReview.IsReview(tool) && !ProviderMcpApproval.IsApproval(tool)))
             throw new ContractException("API Chat only accepts client tool result approvals.");
+        if (!nativeResponses && reviews.Any(ProviderMcpApproval.IsApproval))
+            throw new ContractException("This route cannot continue provider MCP execution approval.", 422);
         // A registered, user-bound signer can be unavailable for requests without a subject.
         // That is distinct from a host intentionally running with signing disabled.
         var signingUnavailable = signer is null
@@ -49,8 +56,12 @@ internal static partial class VercelAdapter
                 && tool.ToolMetadata?.GetValueOrDefault(HostedToolActivity.UiMetadataKey).ValueKind == JsonValueKind.True);
 
         Func<Streaik.Responses.ResponseMcpApprovalRequestItem, Task<IReadOnlyList<UIMessagePart>>>? ConvertReview(
-            Streaik.Responses.ResponseRequest native) => nativeResponses && upstreamReviews && !signingUnavailable
-            ? item => UpstreamMcpReview.CreateAsync(call, request, native.Tools, item) : null;
+            Streaik.Responses.ResponseRequest native) => nativeResponses && !signingUnavailable && (upstreamReviews || providerMcp is { Length: > 0 })
+            ? item => ProviderMcpApproval.Create(call, request, providerMcp, item) is { } parts
+                ? Task.FromResult(parts)
+                : upstreamReviews ? UpstreamMcpReview.CreateAsync(call, request, native.Tools, item)
+                : throw new ContractException("This provider tool requires execution approval, which is unavailable on this route.", 422)
+            : null;
 
         IAsyncEnumerable<UIMessagePart> WithApprovals(IAsyncEnumerable<UIMessagePart> parts)
         {
@@ -61,7 +72,7 @@ internal static partial class VercelAdapter
         IAsyncEnumerable<UIMessagePart> stream;
         if (hosted is { Length: > 0 })
         {
-            var native = await ResponseRequestFromAsync(call, request, hosted);
+            var native = await ResponseRequestFromAsync(call, request, hosted, providerMcp);
             if (native.AdditionalProperties?.ContainsKey(GatewayContainerArtifacts.ReplayKey) == true)
                 throw new ContractException("Hosted tools cannot be combined with container artifact continuation.", 422);
             await call.WriteVercelStreamAsync(async write =>
@@ -78,9 +89,9 @@ internal static partial class VercelAdapter
             });
             return;
         }
-        else if (!call.PreferChatBridge && call.Get<IResponsesProvider>() is { } responses)
+        else if (nativeResponses && call.Get<IResponsesProvider>() is { } responses)
         {
-            var native = await ResponseRequestFromAsync(call, request);
+            var native = await ResponseRequestFromAsync(call, request, providerMcp: providerMcp);
             await GatewayContainerArtifacts.PrepareAsync(call, native);
             var artifacts = new GatewayContainerArtifacts.Turn(call);
             stream = ResponseParts(call, responses.StreamResponseAsync(native, call.Headers, call.Ct), artifacts,
@@ -89,7 +100,17 @@ internal static partial class VercelAdapter
         else if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
         {
             var native = MessagesRequestFrom(call, request);
-            stream = MessageParts(call, messages.StreamMessageAsync(native, MessagesHeaders(call, request), call.Ct));
+            var headers = MessagesHeaders(call, request);
+            if (messagesMcp)
+            {
+                headers = MessagesMcp.Add(providerMcp!, native, headers);
+                native.ToolChoice ??= request.ToolChoice switch
+                {
+                    null => null, "auto" => new() { Type = "auto" }, "required" => new() { Type = "any" },
+                    "none" => new() { Type = "none" }, var name => new() { Type = "tool", Name = name }
+                };
+            }
+            stream = MessageParts(call, messages.StreamMessageAsync(native, headers, call.Ct));
         }
         else if (call.GetChatBridge() is { } chat)
         {

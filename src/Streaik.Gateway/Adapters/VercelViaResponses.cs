@@ -12,7 +12,8 @@ internal static partial class VercelAdapter
 {
     private const string EncryptedReasoningInclude = "reasoning.encrypted_content";
 
-    private static async Task<ResponseRequest> ResponseRequestFromAsync(GatewayCall call, ChatRequest request, HostedToolDefinition[]? hosted = null)
+    private static async Task<ResponseRequest> ResponseRequestFromAsync(GatewayCall call, ChatRequest request,
+        HostedToolDefinition[]? hosted = null, McpToolDefinition[]? providerMcp = null)
     {
         // An explicit OpenAI include array is authoritative, including an empty opt-out.
         var include = Option(request, call.ProviderId, "include") is { ValueKind: JsonValueKind.Array } value
@@ -24,6 +25,7 @@ internal static partial class VercelAdapter
             includeEncryptedReasoning = true;
         }
         var tools = ResponseTools(request, call.ProviderId);
+        if (providerMcp is { Length: > 0 }) GatewayHostedTools.AddProviderTools(tools, providerMcp);
         var clientSearch = call.ProviderId == "openai" && tools.Any(tool => tool.Type == "tool_search" && ToolField(tool, "execution") == "client");
         var input = new List<ResponseInputItem>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -56,6 +58,12 @@ internal static partial class VercelAdapter
                     case ReasoningUIPart thought when message.Role == Role.assistant:
                         if (includeEncryptedReasoning && ReplayPart<ResponseInputItem>(thought.ProviderMetadata, call.ProviderId, NativeItem, ResponseJson.Default)
                             is ResponseReasoningItem { Id: { } thoughtId, EncryptedContent: not null } nativeReasoning && seen.Add(thoughtId)) input.Add(nativeReasoning);
+                        break;
+                    case ToolInvocationPart tool when ProviderMcpApproval.IsApproval(tool):
+                        if (message.Role != Role.assistant) throw new ContractException("Invalid provider MCP approval.", 403);
+                        // A decision belongs only to the active assistant turn, not ordinary conversation history.
+                        if (ReferenceEquals(message, request.Messages.LastOrDefault()) && seen.Add(tool.ToolCallId))
+                            input.AddRange(ProviderMcpApproval.Resolve(call, request, providerMcp, tool));
                         break;
                     case ToolInvocationPart tool when UpstreamMcpReview.IsReview(tool):
                         if (message.Role != Role.assistant || !seen.Add(tool.ToolCallId)
@@ -94,6 +102,9 @@ internal static partial class VercelAdapter
                         }
                         if (item is not null && ProviderTool(item) is ({ } nativeId, var _, true) && nativeId == tool.ToolCallId && seen.Add(nativeId))
                             input.Add(item);
+                        else if (item is ResponseMcpCallItem { Id: { } mcpId, ServerLabel: { } serverLabel } mcp && mcpId == tool.ToolCallId
+                            && providerMcp?.Any(server => server.ServerLabel == serverLabel) == true && seen.Add(mcpId))
+                            input.Add(mcp);
                         break;
                     case FileUIPart file when message.Role == Role.user:
                         ResponseContentPart attachment;

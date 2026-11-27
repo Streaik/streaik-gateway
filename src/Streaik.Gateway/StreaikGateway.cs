@@ -120,7 +120,21 @@ public static partial class StreaikGateway
         request.Store = false;
         request.Model = call.NativeModel;
         await call.ResolveDeapiModelAsync();
-        var hosted = GatewayHostedTools.Extract(request);
+        var tools = GatewayHostedTools.Extract(request);
+        var hosted = tools.Local;
+        IMessagesProvider? messagesMcp = null;
+        if (tools.Provider.Length != 0)
+        {
+            if (call.Get<IResponsesProvider>() is not null)
+                GatewayHostedTools.AddProviderTools(request.Tools ??= [], tools.Provider);
+            else if (call.ProviderId == "anthropic" && call.Get<IMessagesProvider>() is { } messages)
+            {
+                if (hosted.Length != 0) throw new ContractException("Anthropic Messages cannot mix provider MCP with Gateway-hosted tools on this route.", 422);
+                messagesMcp = messages;
+            }
+            else
+                throw new ContractException("The selected provider route cannot forward provider-executed MCP.", 422);
+        }
         var nativeApprovals = new NativeMcpApprovals(call, request, hosted);
         var decisions = nativeApprovals.Validate(request);
         if (hosted.Length != 0)
@@ -134,10 +148,14 @@ public static partial class StreaikGateway
             return;
         }
         if (request.Input?.Items is { } history) request.Input = nativeApprovals.RestoreHistory(request, history.ToList());
-        if (UseSpeechFileAdapter(call)) { await SpeechViaResponsesAsync(call, request); return; }
-        if (UseTranscriptionFileAdapter(call)) { await TranscriptionViaResponsesAsync(call, request); return; }
-        if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ResponsesAsync(call, request, image); return; }
-        if (VideoRoute(call) is { } video) { await VideoViaResponsesAsync(call, request, video); return; }
+        if (messagesMcp is not null) { await ProtocolAdapters.ResponsesViaMessagesAsync(call, request, messagesMcp, tools.Provider); return; }
+        if (tools.Provider.Length == 0)
+        {
+            if (UseSpeechFileAdapter(call)) { await SpeechViaResponsesAsync(call, request); return; }
+            if (UseTranscriptionFileAdapter(call)) { await TranscriptionViaResponsesAsync(call, request); return; }
+            if (await ImageRouteAsync(call) is { } image) { await ImageAdapters.ResponsesAsync(call, request, image); return; }
+            if (VideoRoute(call) is { } video) { await VideoViaResponsesAsync(call, request, video); return; }
+        }
         if (call.Get<IResponsesProvider>() is not { } native)
         {
             if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages) await ProtocolAdapters.ResponsesViaMessagesAsync(call, request, messages);
@@ -190,8 +208,8 @@ public static partial class StreaikGateway
             throw new ContractException("reasoning must be null, low, medium, or high.");
         var call = new GatewayCall(context, request.Model);
         await call.ResolveDeapiModelAsync();
-        var hosted = GatewayHostedTools.Extract(request);
-        if (hosted.Length != 0) await VercelAdapter.RunAsync(call, request, hosted);
+        var tools = GatewayHostedTools.Extract(request);
+        if (tools.Any) await VercelAdapter.RunAsync(call, request, tools.Local, tools.Provider);
         else if (await ImageRouteAsync(call) is { } image) await ImageAdapters.VercelAsync(call, request, image);
         else if (VideoRoute(call) is { } video) await VideoViaVercelAsync(call, request, video);
         else if (!await TryVercelAudioChatAsync(call, request))

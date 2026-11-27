@@ -23,13 +23,14 @@ public static class GatewayHostedToolHosting
         return services;
     }
 
-    /// <summary>Enables credential-free public HTTPS MCP, and loopback MCP for same-machine development requests.</summary>
+    /// <summary>Enables public HTTPS MCP with caller-supplied credentials, and loopback MCP for same-machine development requests.</summary>
     public static IServiceCollection AddStreaikPublicHostedTools(this IServiceCollection services)
     {
         services.AddStreaikHostedTools().AddHttpContextAccessor();
         services.TryAddScoped<HostedToolAccess>(provider => PublicMcpAccess.Create(
             provider.GetRequiredService<IHostEnvironment>().IsDevelopment()
-            && provider.GetRequiredService<IHttpContextAccessor>().HttpContext is { } context && IsLoopbackRequest(context)));
+            && provider.GetRequiredService<IHttpContextAccessor>().HttpContext is { } context && IsLoopbackRequest(context),
+            allowRequestCredentials: true));
         return services;
     }
 
@@ -51,22 +52,29 @@ internal static class GatewayHostedTools
     private const string Prefix = "streaik_";
     private const int MaxRounds = 12;
 
-    internal static HostedToolDefinition[] Extract(ResponseRequest request)
+    internal sealed record Tools(HostedToolDefinition[] Local, McpToolDefinition[] Provider)
+    {
+        internal bool Any => Local.Length != 0 || Provider.Length != 0;
+    }
+
+    internal static Tools Extract(ResponseRequest request)
     {
         List<HostedToolDefinition> hosted = [];
+        List<McpToolDefinition> provider = [];
         request.Tools?.RemoveAll(tool =>
         {
             if (!HostedToolsJson.IsHostedKind(tool.Type) || tool.Extra?.GetValueOrDefault("name") is not { ValueKind: JsonValueKind.String } name
                 || !name.ValueEquals(tool.Type)) return false;
-            hosted.Add(ParseNamed(JsonSerializer.SerializeToElement(tool, ResponseJson.Default), tool.Type));
+            Add(ParseNamed(JsonSerializer.SerializeToElement(tool, ResponseJson.Default), tool.Type), hosted, provider);
             return true;
         });
-        return hosted.ToArray();
+        return new(hosted.ToArray(), provider.ToArray());
     }
 
-    internal static HostedToolDefinition[] Extract(ChatRequest request)
+    internal static Tools Extract(ChatRequest request)
     {
         List<HostedToolDefinition> hosted = [];
+        List<McpToolDefinition> provider = [];
         request.Tools?.RemoveAll(tool =>
         {
             var schema = tool.InputSchema;
@@ -84,11 +92,33 @@ internal static class GatewayHostedTools
                 throw new ContractException("The hosted options key must match the tool name in an object inputSchema.");
             if (tool.AllowedCallers is not null || tool.DeferLoading is not null || tool.OutputSchema is not null)
                 throw new ContractException("Put hosted caller and deferred-loading settings in the named inputSchema options object.");
-            try { hosted.Add(HostedToolsJson.ParseNamedOptions(tool.Name, keywords![tool.Name])); }
+            try { Add(HostedToolsJson.ParseNamedOptions(tool.Name, keywords![tool.Name]), hosted, provider); }
             catch (JsonException) { throw new ContractException($"Invalid named hosted '{tool.Name}' tool."); }
             return true;
         });
-        return hosted.ToArray();
+        return new(hosted.ToArray(), provider.ToArray());
+    }
+
+    private static void Add(HostedToolDefinition tool, List<HostedToolDefinition> hosted, List<McpToolDefinition> provider)
+    {
+        if (tool is McpToolDefinition { Execution: "server" } mcp) provider.Add(mcp);
+        else hosted.Add(tool);
+    }
+
+    internal static void AddProviderTools(List<ResponseToolDefinition> tools, McpToolDefinition[] definitions)
+    {
+        var labels = tools.Where(tool => tool.Type == "mcp")
+            .Select(tool => tool.Extra?.GetValueOrDefault("server_label"))
+            .Where(label => label is { ValueKind: JsonValueKind.String })
+            .Select(label => label!.Value.GetString()).ToHashSet(StringComparer.Ordinal);
+        foreach (var descriptor in definitions)
+        {
+            if (!labels.Add(descriptor.ServerLabel)) throw new ContractException("Provider MCP server labels must be distinct.");
+            var fields = JsonSerializer.SerializeToElement<HostedToolDefinition>(descriptor, HostedToolsJson.Options)
+                .EnumerateObject().Where(property => property.Name is not ("type" or "execution"))
+                .ToDictionary(property => property.Name, property => property.Value, StringComparer.Ordinal);
+            tools.Add(new ResponseToolDefinition { Type = "mcp", Extra = fields });
+        }
     }
 
     private static HostedToolDefinition ParseNamed(JsonElement value, string name)

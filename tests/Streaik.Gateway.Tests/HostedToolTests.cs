@@ -37,7 +37,11 @@ public sealed class HostedToolTests
         {
             var access = scope.ServiceProvider.GetRequiredService<HostedToolAccess>();
             Assert.Equal(loopback, await access.AuthorizeMcp!("local", new Uri("http://localhost:8123/mcp"), ToolCaller.Direct, default) is not null);
-            Assert.NotNull(await access.AuthorizeMcp("public", Endpoint, ToolCaller.Direct, default));
+            var grant = await access.AuthorizeMcp("public", Endpoint, ToolCaller.Direct, default);
+            Assert.NotNull(grant);
+            Assert.True(grant.AllowAllRequestHeaders);
+            Assert.True(grant.AllowRequestAuthorization);
+            Assert.Empty(grant.AllowedRequestHeaders);
             Assert.Null(await access.AuthorizeMcp("private", new Uri("https://192.168.1.9/mcp"), ToolCaller.Direct, default));
         }
         finally { accessor.HttpContext = null; }
@@ -94,6 +98,146 @@ public sealed class HostedToolTests
         using var result = await host.PostAsync(route, body, Key);
         Assert.Equal(HttpStatusCode.UnprocessableEntity, result.StatusCode);
         Assert.Empty(host.Requests);
+    }
+
+    private static JsonObject McpRequest(string route, string? execution, string model = "openai/test")
+    {
+        var descriptor = new JsonObject
+        {
+            ["server_label"] = "inventory", ["server_url"] = Endpoint.AbsoluteUri, ["allowed_tools"] = new JsonArray("lookup"),
+            ["headers"] = new JsonObject { ["Authorization"] = "Bearer mcp-only", ["X-Region"] = "eu" }
+        };
+        if (execution is not null) descriptor["execution"] = execution;
+        if (route == "/api/chat") return new JsonObject
+        {
+            ["model"] = model, ["id"] = "chat-provider-mcp",
+            ["messages"] = JsonNode.Parse("""[{"id":"u","role":"user","parts":[{"type":"text","text":"hello"}]}]"""),
+            ["tools"] = new JsonArray(new JsonObject
+            { ["name"] = "mcp", ["inputSchema"] = new JsonObject { ["type"] = "object", ["mcp"] = descriptor } })
+        };
+        descriptor["type"] = "mcp";
+        descriptor["name"] = "mcp";
+        return new JsonObject { ["model"] = model, ["input"] = "hello", ["tools"] = new JsonArray(descriptor) };
+    }
+
+    [Theory]
+    [InlineData("/api/chat", null)]
+    [InlineData("/v1/responses", null)]
+    [InlineData("/api/chat", "client")]
+    [InlineData("/v1/responses", "client")]
+    public async Task Hosted_MCP_forwards_explicit_headers_to_the_MCP_endpoint_only(string route, string? execution)
+    {
+        var calls = 0;
+        await using var host = await FixtureHost.StartAsync(configure: services =>
+        {
+            services.AddStreaikPublicHostedTools();
+            var access = PublicMcpAccess.Create(allowLoopback: false, allowRequestCredentials: true);
+            services.AddSingleton(access with { CreateMcpHandler = _ => new McpFixture(() => { }, observe: outgoing =>
+            {
+                calls++;
+                Assert.Equal(Endpoint, outgoing.RequestUri);
+                Assert.Equal("Bearer mcp-only", outgoing.Headers.GetValues("Authorization").Single());
+                Assert.Equal("eu", outgoing.Headers.GetValues("X-Region").Single());
+                Assert.False(outgoing.Headers.Contains(Key.Name));
+            }) });
+        });
+        using var result = await host.PostAsync(route, McpRequest(route, execution).ToJsonString(), Key);
+        await GatewayTests.Success(result);
+        Assert.True(calls > 0);
+        var body = host.Requests.Single().Body!.ToJsonString();
+        Assert.Contains("streaik_mcp_", body);
+        Assert.DoesNotContain("mcp-only", body);
+        Assert.DoesNotContain("X-Region", body);
+    }
+
+    [Theory]
+    [InlineData("/api/chat")]
+    [InlineData("/v1/responses")]
+    public async Task Provider_MCP_forwards_the_native_descriptor_without_a_local_harness(string route)
+    {
+        await using var host = await FixtureHost.StartAsync(configure: services => services.AddSingleton(
+            new HostedToolAccess((_, _, _, _) => throw new InvalidOperationException("Must not authorize an MCP connection."))));
+        using var result = await host.PostAsync(route, McpRequest(route, "server").ToJsonString(), Key);
+        await GatewayTests.Success(result);
+        var outbound = host.Requests.Single().Body!;
+        var tool = Assert.Single(outbound["tools"]!.AsArray())!;
+        Assert.Equal("mcp", (string?)tool["type"]);
+        Assert.Equal("inventory", (string?)tool["server_label"]);
+        Assert.Equal(Endpoint.AbsoluteUri, (string?)tool["server_url"]);
+        Assert.Equal("lookup", (string?)tool["allowed_tools"]![0]);
+        Assert.Equal("Bearer mcp-only", (string?)tool["headers"]!["Authorization"]);
+        Assert.Equal("eu", (string?)tool["headers"]!["X-Region"]);
+        Assert.Null(tool["execution"]);
+        Assert.Null(tool["name"]);
+    }
+
+    [Theory]
+    [InlineData("/api/chat")]
+    [InlineData("/v1/responses")]
+    public async Task Anthropic_provider_MCP_maps_bearer_auth_and_rejects_unrepresentable_headers(string route)
+    {
+        await using var host = await FixtureHost.StartAsync();
+        var request = McpRequest(route, "server", "anthropic/test");
+        var descriptor = route == "/api/chat" ? request["tools"]![0]!["inputSchema"]!["mcp"]! : request["tools"]![0]!;
+        request[route == "/api/chat" ? "maxOutputTokens" : "max_output_tokens"] = 256;
+        var key = ("x-anthropic-key", "inference-only");
+        var version = ("anthropic-version", "2023-06-01");
+        using var unsupported = await host.PostAsync(route, request.ToJsonString(), key, version);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, unsupported.StatusCode);
+        Assert.Empty(host.Requests);
+
+        descriptor["headers"]!.AsObject().Remove("X-Region");
+        using var forwarded = await host.PostAsync(route, request.ToJsonString(), key, version);
+        await GatewayTests.Success(forwarded);
+        var upstream = Assert.Single(host.Requests);
+        Assert.EndsWith("/v1/messages", upstream.Path);
+        Assert.Contains("mcp-client-2025-11-20", upstream.Headers["anthropic-beta"]);
+        var endpoint = Assert.Single(upstream.Body!["mcp_servers"]!.AsArray())!;
+        Assert.Equal(Endpoint.AbsoluteUri, (string?)endpoint["url"]);
+        Assert.Equal("mcp-only", (string?)endpoint["authorization_token"]);
+        var toolset = Assert.Single(upstream.Body["tools"]!.AsArray())!;
+        Assert.Equal("mcp_toolset", (string?)toolset["type"]);
+        Assert.True((bool?)toolset["configs"]!["lookup"]!["enabled"]);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Provider_MCP_API_Chat_replays_execution_approvals_upstream_only(bool approved)
+    {
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            if (request.Body!["input"]!.AsArray().Any(item => (string?)item?["type"] == "mcp_approval_response")) return FixtureHost.Reply(request);
+            return FixtureHost.Sse($$"""{"type":"response.completed","sequence_number":0,"response":{{Result(new
+                { type = "mcp_approval_request", id = "native_approval", server_label = "inventory", name = "lookup", arguments = "{\"sku\":\"A-1\"}" })}}}""");
+        }, services =>
+        {
+            services.AddStreaikHostedTools();
+            services.AddSingleton(new HostedToolAccess((_, _, _, _) => throw new InvalidOperationException("Must not authorize an MCP connection.")));
+        });
+        var request = McpRequest("/api/chat", "server");
+        using var first = await host.PostAsync("/api/chat", request.ToJsonString(), Key);
+        var wire = await GatewayTests.Success(first);
+        Assert.DoesNotContain("mcp-only", wire);
+        var call = GatewayTests.Part(wire, "tool-input-available");
+        Assert.Equal("streaik_mcp_execution_approval", (string?)call["toolName"]);
+        var approval = GatewayTests.Part(wire, "tool-approval-request");
+        Assert.Null(approval["approvalDescriptor"]!["output"]);
+        var decision = new JsonObject
+        {
+            ["type"] = "dynamic-tool", ["toolName"] = call["toolName"]!.DeepClone(), ["toolCallId"] = call["toolCallId"]!.DeepClone(),
+            ["providerExecuted"] = true, ["input"] = call["input"]!.DeepClone(), ["state"] = "approval-responded",
+            ["toolMetadata"] = call["toolMetadata"]!.DeepClone(),
+            ["approval"] = new JsonObject { ["id"] = approval["approvalId"]!.DeepClone(), ["approved"] = approved }
+        };
+        request["messages"]!.AsArray().Add(new JsonObject { ["id"] = "a", ["role"] = "assistant", ["parts"] = new JsonArray(decision) });
+        using var resumed = await host.PostAsync("/api/chat", request.ToJsonString(), Key);
+        await GatewayTests.Success(resumed);
+        var input = host.Requests.Last().Body!["input"]!.AsArray();
+        var forwarded = Assert.Single(input, item => (string?)item?["type"] == "mcp_approval_response")!;
+        Assert.Equal("native_approval", (string?)forwarded["approval_request_id"]);
+        Assert.Equal(approved, (bool?)forwarded["approve"]);
+        Assert.Contains(input, item => (string?)item?["type"] == "mcp_approval_request" && (string?)item?["id"] == "native_approval");
     }
 
     [Theory]
@@ -499,11 +643,12 @@ public sealed class HostedToolTests
 
     private static string Result(object item) => JsonSerializer.Serialize(new { id = "resp_test", @object = "response", model = "test", status = "completed", output = new[] { item } });
 
-    private sealed class McpFixture(Action invoked, Func<CancellationToken, Task>? beforeResult = null) : HttpMessageHandler
+    private sealed class McpFixture(Action invoked, Func<CancellationToken, Task>? beforeResult = null, Action<HttpRequestMessage>? observe = null) : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             if (request.Content is null) return new(HttpStatusCode.NoContent);
+            observe?.Invoke(request);
             using var document = JsonDocument.Parse(await request.Content.ReadAsStringAsync(ct));
             var json = document.RootElement;
             if (!json.TryGetProperty("id", out var id)) return new(HttpStatusCode.Accepted);
