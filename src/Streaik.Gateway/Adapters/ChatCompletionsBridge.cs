@@ -14,8 +14,8 @@ internal static class ChatCompletionsBridge
         bool documentUrls = false, bool googleInteractions = false)
     {
         if (request.CacheControl is not null || request.Container is not null || request.InferenceGeo is not null
-            || request.Metadata is not null || request.OutputConfig is not null || request.ServiceTier is not null
-            || request.Speed is not null || request.Thinking is not null || request.ContextManagement is not null
+            || request.Metadata is not null || request.ServiceTier is not null
+            || request.Speed is not null || request.ContextManagement is not null
             || request.Diagnostics is not null || request.Compaction is not null || request.TopK is not null
             || request.AdditionalProperties?.Count > 0)
             throw Unsupported("option");
@@ -79,6 +79,7 @@ internal static class ChatCompletionsBridge
                     case { Type: "thinking", Thinking: { Length: > 0 } thought } when translatePresentation && message.Role == "assistant":
                         FlushText(); parts.Add(new ChatMessageUnknownContentPart { AdditionalProperties = new()
                           { ["type"] = JsonSerializer.SerializeToElement("thinking"), ["thinking"] = JsonSerializer.SerializeToElement(thought) } }); break;
+                    case { Type: "thinking" or "redacted_thinking" } when message.Role == "assistant": break;
                     case { Type: GoogleGeminiProvider.InteractionReplayKey, Data: { Length: > 0 } snapshot }
                         when googleInteractions && message.Role == "assistant":
                         using (var replay = JsonDocument.Parse(snapshot))
@@ -105,6 +106,7 @@ internal static class ChatCompletionsBridge
         var native = new ChatCompletionOptions { Model = request.Model, Messages = messages, MaxTokens = maxTokens,
             Temperature = request.Temperature, TopP = request.TopP, Stream = request.Stream, Tools = tools,
             Stop = request.StopSequences is { Count: > 0 } stop ? (ChatCompletionStop)stop.ToArray() : null };
+        if (ReasoningBridge.FromMessages(request) is { } effort) native.ReasoningEffort = new(effort);
         if (choice is not null)
         {
             if (choice.Type == "tool" && choice.Name is { Length: > 0 } name)
@@ -140,6 +142,8 @@ internal static class ChatCompletionsBridge
             || choice.Message is not { } message || message.FunctionCall is not null || message.Audio is not null)
             throw new IOException("Invalid Chat Completions result.");
         List<MessageContentBlock> blocks = [];
+        if (ReasoningBridge.ChatText(message.AdditionalProperties) is { } thought)
+            blocks.Add(new() { Type = "thinking", Thinking = thought, Signature = "" });
         if (message.Content is { Length: > 0 } text) blocks.Add(new() { Type = "text", Text = text });
         foreach (var tool in message.ToolCalls ?? [])
         {
@@ -201,13 +205,12 @@ internal static class ChatCompletionsBridge
             if (choice.Delta is not { } delta) continue;
             if (delta.FunctionCall is not null || delta.Audio is not null) throw new IOException("Unsupported Chat Completions delta.");
             refusal |= delta.Refusal is { Length: > 0 };
-            if (translatePresentation && delta.AdditionalProperties?.GetValueOrDefault("reasoning_content") is { ValueKind: JsonValueKind.String } thought
-                && thought.GetString() is { Length: > 0 } reasoning)
+            if (ReasoningBridge.ChatText(delta.AdditionalProperties) is { } reasoning)
             {
                 if (!reasoningIndex.HasValue)
                 {
                     reasoningIndex = next++;
-                    yield return Start(reasoningIndex.Value, new() { Type = "thinking", Thinking = "" });
+                    yield return Start(reasoningIndex.Value, new() { Type = "thinking", Thinking = "", Signature = "" });
                 }
                 yield return Delta(reasoningIndex.Value, new() { Type = "thinking_delta", Thinking = reasoning });
             }

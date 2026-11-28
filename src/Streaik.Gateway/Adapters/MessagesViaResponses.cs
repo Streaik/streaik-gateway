@@ -18,7 +18,7 @@ internal static partial class ProtocolAdapters
 
     private static ResponseRequest ToResponses(MessagesRequest request)
     {
-        if (request.Thinking is not null || request.OutputConfig is not null || request.StopSequences?.Count > 0 || request.TopK is not null
+        if (request.StopSequences?.Count > 0 || request.TopK is not null
             || request.Container is not null || request.CacheControl is not null || request.InferenceGeo is not null || request.Speed is not null
             || request.ContextManagement is not null || request.Compaction is not null || request.Diagnostics is not null
             || request.ServiceTier is not null || request.Metadata is not null || request.AdditionalProperties?.Count > 0)
@@ -34,6 +34,7 @@ internal static partial class ProtocolAdapters
             {
                 foreach (var block in blocks)
                 {
+                    if (role == ResponseRole.Assistant && (block.Type is "thinking" or "redacted_thinking")) continue;
                     if (block.CacheControl is not null || block.AdditionalProperties?.Count > 0)
                         throw new ContractException("This Messages block has no Responses translation.");
                     input.Add(block switch
@@ -55,6 +56,7 @@ internal static partial class ProtocolAdapters
                 ? b.Text : throw new ContractException("Unsupported Messages system content.")));
         var native = new ResponseRequest { Model = request.Model, Store = false, Input = new ResponseInput(input), Instructions = instructions,
             Stream = request.Stream, MaxOutputTokens = request.MaxTokens, Temperature = request.Temperature, TopP = request.TopP };
+        if (ReasoningBridge.FromMessages(request) is { } effort) native.Reasoning = new Reasoning { Effort = effort };
         if (request.ToolChoice?.Type != "none") native.Tools = request.Tools?.Select(tool =>
         {
             if (tool.Type is not (null or "custom") || tool.Name is null || tool.InputSchema is null || tool.CacheControl is not null
@@ -100,8 +102,10 @@ internal static partial class ProtocolAdapters
                 case ResponseFunctionCallItem function:
                     content.Add(new MessageContentBlock { Type = "tool_use", Id = function.CallId, Name = function.Name,
                         Input = MessagesHistory.ParseArguments(function.Arguments) }); break;
-                case ResponseReasoningItem:
-                    break; // No Messages thinking was requested; encrypted internal reasoning is not visible text.
+                case ResponseReasoningItem reasoning:
+                    foreach (var part in reasoning.Summary.Where(part => part.Type == "summary_text" && !string.IsNullOrEmpty(part.Text)))
+                        content.Add(new() { Type = "thinking", Thinking = part.Text, Signature = "" });
+                    break;
                 default: throw new IOException("This Responses output cannot be represented as Messages.");
             }
         }
@@ -133,6 +137,7 @@ internal static partial class ProtocolAdapters
         var blocks = new Dictionary<(string Item, int Content), int>();
         var closed = new HashSet<int>();
         var argumentDeltas = new HashSet<int>();
+        var summaries = new Dictionary<(string Item, int Summary), int>();
         var toolCalls = false;
         var started = false;
         const int tool = -1;
@@ -149,15 +154,34 @@ internal static partial class ProtocolAdapters
                     { Id = evt.Response.Id, Role = "assistant", Type = "message", Usage = MessageUsage(evt.Response.NormalizedUsage) } };
                     break;
                 case ResponseOutputItemAdded { Item: { Type: "function_call", Id: { } id } item }:
-                    var functionIndex = blocks.Count;
+                    var functionIndex = blocks.Count + summaries.Count;
                     blocks.Add((id, tool), functionIndex);
                     toolCalls = true;
                     yield return Start(functionIndex, new MessageContentBlock { Type = "tool_use", Id = item.CallId, Name = item.Name,
                         Input = JsonSerializer.SerializeToElement(new { }) }); break;
                 case ResponseOutputItemAdded { Item.Type: not ("message" or "reasoning") }:
                     throw new IOException("Unsupported Responses output item for Messages.");
+                case ResponseReasoningSummaryTextDelta thought when !string.IsNullOrEmpty(thought.Delta):
+                    var summaryKey = (thought.ItemId, thought.SummaryIndex);
+                    if (!summaries.TryGetValue(summaryKey, out var summary))
+                    {
+                        summary = blocks.Count + summaries.Count;
+                        summaries.Add(summaryKey, summary);
+                        yield return Start(summary, new() { Type = "thinking", Thinking = "", Signature = "" });
+                    }
+                    yield return Delta(summary, new() { Type = "thinking_delta", Thinking = thought.Delta }); break;
+                case ResponseReasoningSummaryTextDone thought:
+                    var doneKey = (thought.ItemId, thought.SummaryIndex);
+                    if (!summaries.TryGetValue(doneKey, out var doneSummary) && !string.IsNullOrEmpty(thought.Text))
+                    {
+                        doneSummary = blocks.Count + summaries.Count;
+                        summaries.Add(doneKey, doneSummary);
+                        yield return Start(doneSummary, new() { Type = "thinking", Thinking = thought.Text, Signature = "" });
+                    }
+                    if (summaries.ContainsKey(doneKey) && closed.Add(doneSummary)) yield return End(doneSummary);
+                    break;
                 case ResponseContentPartAdded { Part.Type: "output_text" } evt:
-                    var textIndex = blocks.Count;
+                    var textIndex = blocks.Count + summaries.Count;
                     if (blocks.TryAdd((evt.ItemId, evt.ContentIndex), textIndex))
                         yield return Start(textIndex, new MessageContentBlock { Type = "text", Text = evt.Part.Text ?? "" });
                     break;
@@ -165,7 +189,7 @@ internal static partial class ProtocolAdapters
                     var key = (evt.ItemId, evt.ContentIndex);
                     if (!blocks.TryGetValue(key, out var index))
                     {
-                        index = blocks.Count; blocks.Add(key, index);
+                        index = blocks.Count + summaries.Count; blocks.Add(key, index);
                         yield return Start(index, new MessageContentBlock { Type = "text", Text = "" });
                     }
                     yield return Delta(index, new MessageStreamDelta { Type = "text_delta", Text = evt.Delta }); break;
@@ -188,7 +212,7 @@ internal static partial class ProtocolAdapters
             if (result is null) continue;
             if (!started)
                 yield return new MessageStreamPart { Type = "message_start", Message = new MessagesResponse { Id = result.Id, Type = "message", Role = "assistant" } };
-            foreach (var i in blocks.Values) if (closed.Add(i)) yield return End(i);
+            foreach (var i in blocks.Values.Concat(summaries.Values).Order()) if (closed.Add(i)) yield return End(i);
             yield return new MessageStreamPart { Type = "message_delta", Delta = new MessageStreamDelta { StopReason = MessageStop(result, toolCalls) },
                 Usage = MessageUsage(result.NormalizedUsage) };
             yield return new MessageStreamPart { Type = "message_stop", Metadata = ResponseBridgeMetadata(result, provider) };

@@ -48,7 +48,7 @@ internal static partial class ProtocolAdapters
         if (request.NumberOfChoices is not (null or 1) || request.ResponseFormat is not null || request.Functions is not null
             || request.FunctionCall is not null || request.Store == true || request.Logprobs == true || request.AdditionalProperties?.Count > 0
             || request.Modalities?.Any(m => m != "text") == true || request.WebSearchOptions is not null
-            || request.Audio is not null || request.Prediction is not null || request.ReasoningEffort is not null
+            || request.Audio is not null || request.Prediction is not null
             || request.FrequencyPenalty is not null || request.PresencePenalty is not null || request.LogitBias is not null
             || request.Seed is not null || request.TopLogprobs is not null || request.PromptCacheOptions is not null
             || request.Moderation is not null || request.Verbosity is not null || request.StreamOptions?.IncludeObfuscation == true)
@@ -73,6 +73,7 @@ internal static partial class ProtocolAdapters
             }
         }
         var native = history.Build(request.Model, request.MaxCompletionTokens ?? request.MaxTokens, request.Temperature, request.TopP, request.Stream);
+        ReasoningBridge.SetMessagesEffort(native, request.ReasoningEffort?.Value);
         native.StopSequences = request.Stop?.Sequences?.ToList() ?? (request.Stop?.Sequence is { } stop ? [stop] : null);
         var tools = (request.Tools ?? []).Select(tool => tool is ChatCompletionTool function
             ? new MessageToolDefinition { Name = function.Function.Name, Description = function.Function.Description,
@@ -93,15 +94,17 @@ internal static partial class ProtocolAdapters
 
     private static ChatCompletion ChatResult(MessagesResponse result)
     {
-        if (result.Content.Any(b => b.Type is not ("text" or "tool_use") || b.Citations?.Count > 0))
+        if (result.Content.Any(b => b.Type is not ("text" or "tool_use" or "thinking" or "redacted_thinking") || b.Citations?.Count > 0))
             throw new IOException("This Messages result cannot be represented as Chat Completions.");
         var text = string.Concat(result.Content.Where(b => b.Type == "text").Select(b => b.Text));
+        var reasoning = string.Concat(result.Content.Where(b => b.Type == "thinking").Select(b => b.Thinking));
         var tools = result.Content.Where(b => b.Type == "tool_use").Select(b => new ChatCompletionMessageToolCall
             { Id = b.Id!, Function = new ChatCompletionFunctionCall { Name = b.Name!, Arguments = b.Input?.GetRawText() ?? "{}" } }).ToList();
         return new ChatCompletion { Id = result.Id!, Model = result.Model!, Created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), Usage = ChatUsage(result.Usage),
             MetadataExtensions = GatewayPricing.CostMetadata(GatewayPricing.Cost(result.Metadata)),
             Choices = [new ChatCompletionChoice { FinishReason = ChatStop(result.StopReason),
-                Message = new ChatCompletionResponseMessage { Content = text.Length == 0 && tools.Count != 0 ? null : text, ToolCalls = tools.Count == 0 ? null : tools } }] };
+                Message = new ChatCompletionResponseMessage { Content = text.Length == 0 && tools.Count != 0 ? null : text,
+                    ToolCalls = tools.Count == 0 ? null : tools, AdditionalProperties = reasoning.Length == 0 ? null : ReasoningBridge.ChatFields(reasoning) } }] };
     }
 
     private static async IAsyncEnumerable<ChatCompletionUpdate> ChatUpdates(GatewayCall call, IAsyncEnumerable<MessageStreamPart> source, bool includeUsage,
@@ -134,6 +137,13 @@ internal static partial class ProtocolAdapters
                 case { Type: "content_block_start", ContentBlock: { Type: "text" } block }:
                     if (!string.IsNullOrEmpty(block.Text)) yield return Chunk(new ChatCompletionDelta { Content = block.Text });
                     break;
+                case { Type: "content_block_start", ContentBlock: { Type: "thinking" or "redacted_thinking" } block }:
+                    if (block.Type == "thinking" && block.Thinking is { Length: > 0 } initial)
+                        yield return Chunk(new ChatCompletionDelta { AdditionalProperties = ReasoningBridge.ChatFields(initial) });
+                    break;
+                case { Type: "content_block_delta", Delta: { Type: "thinking_delta", Thinking: { Length: > 0 } thought } }:
+                    yield return Chunk(new ChatCompletionDelta { AdditionalProperties = ReasoningBridge.ChatFields(thought) }); break;
+                case { Type: "content_block_delta", Delta.Type: "signature_delta" or "thinking_delta" }: break;
                 case { Type: "content_block_start", ContentBlock: { Type: "tool_use" } block }:
                     var input = block.Input?.GetRawText() ?? "{}";
                     var toolIndex = tools.Count;

@@ -29,7 +29,7 @@ internal static partial class ProtocolAdapters
 
     private static MessagesRequest ToMessages(ResponseRequest request, McpToolDefinition[]? mcp = null, bool listings = false)
     {
-        if (request.Reasoning is not null || request.Text is not null || request.Prompt is not null || request.Include?.Count > 0
+        if (request.Text is not null || request.Prompt is not null || request.Include?.Count > 0
             || request.ContextManagement?.Length > 0 || request.AdditionalProperties?.Count > 0 || request.TopLogprobs is not null
             || request.Truncation is not null || request.MaxToolCalls is not null || request.ServiceTier is not null || request.Metadata?.Count > 0
             || request.User is not null || request.SafetyIdentifier is not null || request.PromptCacheKey is not null || request.PromptCacheRetention is not null)
@@ -57,6 +57,8 @@ internal static partial class ProtocolAdapters
                     history.Tool(function.CallId, function.Name, MessagesHistory.ParseArguments(function.Arguments)); break;
                 case ResponseFunctionCallOutputItem { StructuredOutput: null } result:
                     history.Result(result.CallId ?? throw new ContractException("Missing function call ID."), result.Output); break;
+                case ResponseReasoningItem:
+                    break; // Responses reasoning is not replayable as native Messages history.
                 case NativeAssistantTurn turn:
                     foreach (var block in turn.Blocks) history.Add("assistant", block);
                     break;
@@ -79,6 +81,7 @@ internal static partial class ProtocolAdapters
             }
         }
         var native = history.Build(request.Model!, request.MaxOutputTokens, request.Temperature, request.TopP, request.Stream);
+        ReasoningBridge.SetMessagesEffort(native, ReasoningBridge.FromResponses(request.Reasoning));
         if (request.Tools is { Count: > 0 })
             native.Tools = request.Tools.Select(MessageFunction).ToList();
         if (request.ToolChoice is JsonElement choice)
@@ -124,7 +127,8 @@ internal static partial class ProtocolAdapters
                 if (McpListing(id, index, block) is { } listing) items.Add(listing);
                 if (block.Type == "mcp_tool_use" && block.Id is { } callId && mcp?.GetValueOrDefault(callId) is { } tool) items.Add(tool);
             }
-            else if (!hosted || block.Type is "text" or "tool_use") items.Add(OutputItem(id, index, block));
+            else if (block.Type == "redacted_thinking") continue;
+            else if (!hosted || block.Type is "text" or "tool_use" or "thinking") items.Add(OutputItem(id, index, block));
         }
         var response = ResponseResultFrom(id, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), items, result.Usage, result.StopReason);
         response.Model = result.Model ?? call.NativeModel;
@@ -148,8 +152,12 @@ internal static partial class ProtocolAdapters
             Role = ResponseRole.Assistant, Status = "completed", Content = [new ResponseOutputText { Text = block.Text ?? "", Annotations = [] }] },
         { Type: "tool_use" } => new ResponseFunctionCallItem { Id = $"{id}_{index}", CallId = block.Id!, Name = block.Name!,
             Status = "completed", Arguments = block.Input?.GetRawText() ?? "{}" },
+        { Type: "thinking" } => new ResponseReasoningItem { Id = $"{id}_{index}", Summary = Summary(block.Thinking) },
         _ => throw new IOException("This Messages block cannot be represented as Responses output.")
     };
+
+    private static List<ResponseReasoningSummaryTextPart> Summary(string? text)
+        => string.IsNullOrEmpty(text) ? [] : [new() { Text = text }];
 
     private static IEnumerable<ResponseMcpCallItem> McpItems(IEnumerable<MessageContentBlock> blocks)
     {
@@ -203,11 +211,16 @@ internal static partial class ProtocolAdapters
         string? stop = null;
         string ItemId(int i) => $"{id}_{i}";
         ResponseStreamContentPart Text(string? text) => new() { Type = "output_text", Text = text ?? "", Annotations = [] };
-        ResponseStreamItem StreamItem(int i, MessageContentBlock block, bool done) => block.Type == "text"
-            ? new ResponseStreamItem { Type = "message", Id = ItemId(i), Status = done ? "completed" : "in_progress", Role = "assistant",
-                Content = JsonSerializer.SerializeToElement(done ? new[] { Text(block.Text) } : [], ResponseJson.Default) }
-            : new ResponseStreamItem { Type = "function_call", Id = ItemId(i), Status = done ? "completed" : "in_progress",
-                Name = block.Name, CallId = block.Id, Arguments = JsonSerializer.SerializeToElement(done ? block.Input?.GetRawText() ?? "{}" : "") };
+        ResponseStreamContentPart Thought(string? text) => new() { Type = "summary_text", Text = text ?? "" };
+        ResponseStreamItem StreamItem(int i, MessageContentBlock block, bool done) => block.Type switch
+        {
+            "text" => new() { Type = "message", Id = ItemId(i), Status = done ? "completed" : "in_progress", Role = "assistant",
+                Content = JsonSerializer.SerializeToElement(done ? new[] { Text(block.Text) } : [], ResponseJson.Default) },
+            "thinking" => new() { Type = "reasoning", Id = ItemId(i), AdditionalProperties = new()
+                { ["summary"] = JsonSerializer.SerializeToElement(Summary(done ? block.Thinking : null), ResponseJson.Default) } },
+            _ => new() { Type = "function_call", Id = ItemId(i), Status = done ? "completed" : "in_progress",
+                Name = block.Name, CallId = block.Id, Arguments = JsonSerializer.SerializeToElement(done ? block.Input?.GetRawText() ?? "{}" : "") }
+        };
         await foreach (var part in source)
         {
             var nativeIndex = part.Index ?? -1;
@@ -226,7 +239,7 @@ internal static partial class ProtocolAdapters
                         foreach (var update in NativeItemEvents(prior, item)) yield return update;
                     }
                     break;
-                case { Type: "content_block_start", ContentBlock: { Type: "text" or "tool_use" } block }:
+                case { Type: "content_block_start", ContentBlock: { Type: "text" or "tool_use" or "thinking" } block }:
                     blocks.Add(index, (block, new StringBuilder()));
                     yield return new ResponseOutputItemAdded { SequenceNumber = sequence++, OutputIndex = index, Item = StreamItem(index, block, false) };
                     if (block.Type == "text")
@@ -235,11 +248,18 @@ internal static partial class ProtocolAdapters
                         if (!string.IsNullOrEmpty(block.Text)) yield return new ResponseOutputTextDelta
                             { SequenceNumber = sequence++, Outputindex = index, ItemId = ItemId(index), Delta = block.Text };
                     }
+                    else if (block.Type == "thinking")
+                    {
+                        yield return new ResponseReasoningSummaryPartAdded { SequenceNumber = sequence++, OutputIndex = index, ItemId = ItemId(index), Part = Thought("") };
+                        if (!string.IsNullOrEmpty(block.Thinking)) yield return new ResponseReasoningSummaryTextDelta
+                            { SequenceNumber = sequence++, OutputIndex = index, ItemId = ItemId(index), Delta = block.Thinking };
+                    }
                     break;
                 case { Type: "content_block_start", ContentBlock: { Type: "mcp_tool_use" or "mcp_tool_result" or "mcp_tool_listing" } block } when nativeMcp:
                     mcpBlocks.Add(nativeIndex, (block, new StringBuilder()));
                     if (block.Type == "mcp_tool_result") omittedBlocks.Add(nativeIndex);
                     break;
+                case { Type: "content_block_start", ContentBlock.Type: "redacted_thinking" }: omittedBlocks.Add(nativeIndex); break;
                 case { Type: "content_block_start" } when hosted: omittedBlocks.Add(nativeIndex); break;
                 case { Type: "content_block_delta", Delta.PartialJson: { } args } when mcpBlocks.TryGetValue(nativeIndex, out var mcpBlock):
                     mcpBlock.Arguments.Append(args); break;
@@ -261,6 +281,11 @@ internal static partial class ProtocolAdapters
                     }
                     break;
                 case { Type: "content_block_delta" } when mcpBlocks.ContainsKey(nativeIndex) || omittedBlocks.Contains(nativeIndex): break;
+                case { Type: "content_block_delta", Delta: { Type: "thinking_delta", Thinking: { Length: > 0 } thought } }
+                    when blocks.TryGetValue(index, out var reasoning) && reasoning.Block.Type == "thinking":
+                    reasoning.Block.Thinking += thought;
+                    yield return new ResponseReasoningSummaryTextDelta { SequenceNumber = sequence++, OutputIndex = index, ItemId = ItemId(index), Delta = thought }; break;
+                case { Type: "content_block_delta", Delta.Type: "signature_delta" or "thinking_delta" }: break;
                 case { Type: "content_block_delta", Delta.Text: { } text } when blocks.TryGetValue(index, out var current):
                     current.Block.Text += text;
                     yield return new ResponseOutputTextDelta { SequenceNumber = sequence++, Outputindex = index, ItemId = ItemId(index), Delta = text }; break;
@@ -272,6 +297,11 @@ internal static partial class ProtocolAdapters
                     {
                         yield return new ResponseOutputTextDone { SequenceNumber = sequence++, Outputindex = index, ItemId = ItemId(index), Text = current.Block.Text ?? "" };
                         yield return new ResponseContentPartDone { SequenceNumber = sequence++, OutputIndex = index, ItemId = ItemId(index), Part = Text(current.Block.Text) };
+                    }
+                    else if (current.Block.Type == "thinking")
+                    {
+                        yield return new ResponseReasoningSummaryTextDone { SequenceNumber = sequence++, OutputIndex = index, ItemId = ItemId(index), Text = current.Block.Thinking ?? "" };
+                        yield return new ResponseReasoningSummaryPartDone { SequenceNumber = sequence++, OutputIndex = index, ItemId = ItemId(index), Part = Thought(current.Block.Thinking) };
                     }
                     else
                     {
