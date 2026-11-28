@@ -147,7 +147,8 @@ internal static class GatewayHostedTools
             throw new ContractException("Client function names cannot use the Streaik hosted function prefix.");
         try
         {
-            await using var turn = await HostedToolTurn.CreateAsync(definitions, ToolCaller.Direct, access, call.Ct, functionPrefix: Prefix);
+            await using var turn = await HostedToolTurn.CreateAsync(definitions, ToolCaller.Direct, access, call.Ct, functionPrefix: Prefix,
+                defaultSearchModel: call.Model, resolveSearchModel: (model, ct) => GatewayHostedSearch.ResolveAsync(call, model, ct));
             List<ResponseInputItem> history = nativeApprovals?.RestoreHistory(request, initial).Items?.ToList() ?? initial;
             List<ResponseMcpCallItem> completed = [];
             Dictionary<string, string> receipts = new(StringComparer.Ordinal);

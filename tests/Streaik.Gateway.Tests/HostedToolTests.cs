@@ -877,6 +877,70 @@ public sealed class HostedToolTests
         await next(context);
     });
 
+    [Theory]
+    [InlineData("language", "decision", 0.9, false)]
+    [InlineData("decision", "language", 0.1, false)]
+    [InlineData("language", "decision", 0.9, true)]
+    public async Task Hosted_search_uses_the_override_and_never_retries_a_dispatched_decision(string firstType, string secondType, double probability, bool fail)
+    {
+        JsonNode? searchResult = null;
+        var calls = 0;
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            if (request.Path == "/v1/models") return FixtureHost.Json($$"""
+                {"data":[{"id":"gpt-6-luna","type":"{{firstType}}"},{"id":"gpt-6-luna","type":"{{secondType}}"}]}
+                """);
+            if (request.Path == "/v1/decisions")
+            {
+                Assert.Equal("gpt-6-luna", (string?)request.Body!["model"]);
+                var question = Assert.Single(request.Body["questions"]!.AsArray())!;
+                Assert.Contains("lookup", (string?)question["instructions"]);
+                Assert.DoesNotContain("https://inventory", question.ToJsonString());
+                return fail ? new HttpResponseMessage(HttpStatusCode.BadGateway) : FixtureHost.Json(JsonSerializer.Serialize(new
+                {
+                    model = "gpt-6-luna", answers = new[] { new { type = "predicate", name = (string?)question["name"], probability } },
+                    usage = new { input_tokens = 12, output_tokens = 0, total_tokens = 12 },
+                }));
+            }
+            Assert.Equal("/v1/responses", request.Path);
+            Assert.Equal("test", (string?)request.Body!["model"]);
+            if (calls++ == 0) return FixtureHost.Json(Result(new { type = "function_call", call_id = "search",
+                name = "streaik_client_tool_search", arguments = "{\"goal\":\"lookup\"}" }));
+            var output = Assert.Single(request.Body["input"]!.AsArray(), item => (string?)item?["type"] == "function_call_output");
+            searchResult = JsonNode.Parse((string)output!["output"]!);
+            return FixtureHost.Reply(request);
+        }, services =>
+        {
+            services.AddStreaikHostedTools();
+            services.AddSingleton(new HostedToolAccess((label, endpoint, _, _) => ValueTask.FromResult(
+                label == "inventory" && endpoint == Endpoint ? new McpEndpointAccess { ToolNames = new HashSet<string> { "lookup" } } : null),
+                CreateMcpHandler: _ => new McpFixture(() => throw new InvalidOperationException("Search must not execute the remote tool."))));
+        }, decisions: true);
+
+        using var response = await host.PostAsync("/v1/responses", """
+            {"model":"openai/test","input":"Find an inventory tool.","tools":[
+              {"type":"mcp","name":"mcp","server_label":"inventory","server_url":"https://inventory.example.test/mcp","defer_loading":true},
+              {"type":"tool_search","name":"tool_search","model":"openai/gpt-6-luna"}]}
+            """, Key);
+        await GatewayTests.Success(response);
+        Assert.Single(host.Requests, request => request.Path == "/v1/decisions");
+        Assert.Equal(2, calls);
+        Assert.NotNull(searchResult);
+        if (fail)
+        {
+            Assert.True((bool?)searchResult["isError"]);
+            Assert.Equal("Decisions search could not be completed.", (string?)searchResult["error"]);
+            Assert.Null(searchResult["selectedTools"]);
+        }
+        else
+        {
+            Assert.DoesNotContain("isError", searchResult.ToJsonString());
+            var selected = searchResult["selectedTools"]!.AsArray();
+            if (probability > .5) Assert.StartsWith("streaik_mcp_lookup_", (string?)Assert.Single(selected)!["name"]);
+            else Assert.Empty(selected);
+        }
+    }
+
     private static string Result(object item) => JsonSerializer.Serialize(new { id = "resp_test", @object = "response", model = "test", status = "completed", output = new[] { item } });
 
     internal sealed class McpFixture(Action invoked, Func<CancellationToken, Task>? beforeResult = null, Action<HttpRequestMessage>? observe = null) : HttpMessageHandler

@@ -15,7 +15,7 @@ internal sealed class GatewayCall
 {
     private const string StreamErrorMessage = "The upstream stream ended unexpectedly.";
 
-    public GatewayCall(HttpContext context, string? model)
+    public GatewayCall(HttpContext context, string? model, bool activateProvider = true, CancellationToken? cancellationToken = null)
     {
         Context = context;
         var slash = model?.IndexOf('/') ?? -1;
@@ -26,7 +26,8 @@ internal sealed class GatewayCall
         NativeModel = Model[(slash + 1)..];
         var registration = Get<ProviderRegistration>() ?? throw new ContractException("Unknown provider.", 404);
         Headers = GatewayHeaders.Select(context.Request.Headers, registration);
-        context.Items[GatewayHeaderAuth.ActiveProvider] = ProviderId;
+        if (activateProvider) context.Items[GatewayHeaderAuth.ActiveProvider] = ProviderId;
+        Ct = cancellationToken ?? context.RequestAborted;
     }
 
     public HttpContext Context { get; }
@@ -34,7 +35,7 @@ internal sealed class GatewayCall
     public string ProviderId { get; }
     public string NativeModel { get; }
     public IReadOnlyDictionary<string, string> Headers { get; }
-    public CancellationToken Ct => Context.RequestAborted;
+    public CancellationToken Ct { get; }
     internal string? DeapiModelType { get; private set; }
 
     // DeAPI publishes the media type per model; its slugs are not a routing convention.
