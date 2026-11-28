@@ -85,7 +85,7 @@ public sealed class DecisionsTests
                 {"data":[{"id":"accounts/fireworks/models/rune","context_length":2048},
                     {"id":"accounts/team/models/classifier","type":"decision"},
                     {"id":"accounts/team/models/retired","type":"decision","active":false},
-                    {"id":"accounts/fireworks/models/chat"}]}
+                    {"id":"accounts/fireworks/models/chat","created":1700000000}]}
                 """);
         }, decisions: true);
         using var anonymous = await host.GetAsync("/v1/models");
@@ -97,6 +97,7 @@ public sealed class DecisionsTests
         Assert.Equal(new[] { "fireworks/accounts/fireworks/models/rune", "fireworks/accounts/team/models/classifier", "fireworks/accounts/fireworks/models/chat" },
             models.Select(x => x!["id"]!.GetValue<string>()));
         Assert.Equal(new[] { "decision", "decision", "language" }, models.Select(x => (string)x!["type"]!));
+        Assert.Equal(1700000000L, (long)models[2]!["created"]!);
         Assert.Single(host.Requests);
     }
 
