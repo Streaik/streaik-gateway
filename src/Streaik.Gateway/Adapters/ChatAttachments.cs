@@ -22,14 +22,14 @@ internal static class ChatAttachments
 
     public static ContractException Unsupported() => new("This route does not support one of the attached file types. Use a compatible route or convert text files to text.", 422);
 
-    public static MessageContentBlock ToMessages(FileUIPart file, bool viaChat)
+    public static MessageContentBlock ToMessages(FileUIPart file, bool viaChat, bool documentUrls = false)
     {
         if (file.ProviderReference is { Count: > 0 }) throw Unsupported();
         var image = IsImage(file.MediaType);
         var pdf = file.MediaType == "application/pdf";
         if (IsLink(file.Url))
-            return image || (pdf && !viaChat)
-                ? new() { Type = image ? "image" : "document", Source = new() { Type = "url", Url = file.Url }, Title = pdf ? file.Filename : null }
+            return image || documentUrls || (pdf && !viaChat)
+                ? new() { Type = image ? "image" : "document", Source = new() { Type = "url", Url = file.Url }, Title = image ? null : file.Filename }
                 : new() { Type = "text", Text = LinkText(file.Url) };
 
         var data = InlineData(file.Url, file.MediaType) ?? throw Unsupported();

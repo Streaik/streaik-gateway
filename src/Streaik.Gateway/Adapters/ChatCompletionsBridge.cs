@@ -10,7 +10,7 @@ namespace Streaik.Gateway;
 // This is an in-process mapping: no Messages endpoint or provider is called.
 internal static class ChatCompletionsBridge
 {
-    public static ChatCompletionOptions Request(MessagesRequest request, int? maxTokens, bool translatePresentation = false)
+    public static ChatCompletionOptions Request(MessagesRequest request, int? maxTokens, bool translatePresentation = false, bool documentUrls = false)
     {
         if (request.CacheControl is not null || request.Container is not null || request.InferenceGeo is not null
             || request.Metadata is not null || request.OutputConfig is not null || request.ServiceTier is not null
@@ -68,6 +68,11 @@ internal static class ChatCompletionsBridge
                         when message.Role == "user":
                         FlushText(); parts.Add(new ChatMessageFilePart { File = new() { Filename = block.Title ?? "attachment.pdf",
                             FileData = $"data:application/pdf;base64,{pdf}" } }); break;
+                    case { Type: "document", Source: { Type: "url", Url: { } url, AdditionalProperties: null } }
+                        when documentUrls && message.Role == "user" && ChatAttachments.IsLink(url):
+                        FlushText(); parts.Add(new ChatMessageUnknownContentPart { AdditionalProperties = new()
+                        { ["type"] = JsonSerializer.SerializeToElement("document_url"), ["document_url"] = JsonSerializer.SerializeToElement(url),
+                          ["document_name"] = JsonSerializer.SerializeToElement(block.Title) } }); break;
                     case { Type: "thinking", Thinking: { Length: > 0 } thought } when translatePresentation && message.Role == "assistant":
                         FlushText(); parts.Add(new ChatMessageUnknownContentPart { AdditionalProperties = new()
                         { ["type"] = JsonSerializer.SerializeToElement("thinking"), ["thinking"] = JsonSerializer.SerializeToElement(thought) } }); break;

@@ -28,7 +28,8 @@ internal static partial class VercelAdapter
         var converted = request.Messages.SelectMany(m => m.Parts).OfType<ToolInvocationPart>().Any(UpstreamMcpReview.IsReview);
         var upstreamReviews = services.GetService<HostedToolsEnabled>() is not null;
         var hostedApproval = new HostedMcpChatApproval(call, request, hosted, providerMcp, Option(request, call.ProviderId, "tools"), signer, upstreamReviews);
-        var nativeResponses = (!call.PreferChatBridge || providerMcp is { Length: > 0 }) && call.Get<IResponsesProvider>() is not null;
+        var mistralChat = call.ProviderId == "mistral";
+        var nativeResponses = !mistralChat && (!call.PreferChatBridge || providerMcp is { Length: > 0 }) && call.Get<IResponsesProvider>() is not null;
         var messagesMcp = !nativeResponses && providerMcp is { Length: > 0 } && call.ProviderId == "anthropic" && call.Get<IMessagesProvider>() is not null;
         if (providerMcp is { Length: > 0 } && !nativeResponses && !messagesMcp)
             throw new ContractException("The selected provider route cannot forward provider-executed MCP.", 422);
@@ -130,6 +131,7 @@ internal static partial class VercelAdapter
         else if (hosted is { Length: > 0 })
         {
             var native = await ResponseRequestFromAsync(call, request, hosted, providerMcp, hostedReplay);
+            if (mistralChat) native.Include = null; // Chat Completions does not accept Responses' encrypted-reasoning include.
             if (native.AdditionalProperties?.ContainsKey(GatewayContainerArtifacts.ReplayKey) == true)
                 throw new ContractException("Hosted tools cannot be combined with container artifact continuation.", 422);
             await call.WriteVercelStreamAsync(async write =>
@@ -141,7 +143,8 @@ internal static partial class VercelAdapter
                     await write(HostedActivityPart(activity));
                 }
                 started = await WriteApprovedActivity(write);
-                var handled = await GatewayHostedTools.RunAsync(call, native, hosted, hostedApproval, Observe);
+                var handled = await GatewayHostedTools.RunAsync(call, native, hosted, hostedApproval, Observe,
+                    readRound: mistralChat ? next => GatewayHostedTools.ReadRoundAsync(call, next, preferChat: true) : null);
                 return WithApprovals(ResponseParts(call, GatewayHostedTools.Events(handled.Events, call.Ct), new GatewayContainerArtifacts.Turn(call),
                     native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), handled.Approval, started));
             });
@@ -186,8 +189,9 @@ internal static partial class VercelAdapter
             if ((!nativeOptions && request.ProviderMetadata?.ContainsKey(call.ProviderId) == true)
                 || request.Messages.SelectMany(message => message.Parts).OfType<ToolInvocationPart>().Any(tool => tool.ProviderExecuted == true))
                 throw new ContractException("Provider-specific Vercel options require a native adapter.");
-            var translatePresentation = call.ProviderId == "cohere";
-            var native = ChatCompletionsBridge.Request(MessagesRequestFrom(call, request, viaChat: true), request.MaxOutputTokens, translatePresentation);
+            var translatePresentation = call.ProviderId is "cohere" or "mistral";
+            var native = ChatCompletionsBridge.Request(MessagesRequestFrom(call, request, viaChat: true), request.MaxOutputTokens,
+                translatePresentation, documentUrls: mistralChat);
             if (request.Reasoning is { } effort) native.ReasoningEffort = new ChatCompletionReasoningEffort(effort);
             if (nativeOptions) native.AdditionalProperties = ApplyNativeOptions(call, request, native, Web);
             stream = MessageParts(call, ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), nativeOptions,

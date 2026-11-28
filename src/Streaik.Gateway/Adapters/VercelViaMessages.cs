@@ -41,7 +41,7 @@ internal static partial class VercelAdapter
                 {
                     case TextUIPart text: history.Text(message.Role.ToString(), text.Text); break;
                     case FileUIPart file when message.Role == Role.user:
-                        history.Add("user", ChatAttachments.ToMessages(file, viaChat)); break;
+                        history.Add("user", ChatAttachments.ToMessages(file, viaChat, viaChat && call.ProviderId == "mistral")); break;
                     case FileUIPart when message.Role == Role.assistant: break;
                     case ReasoningUIPart reasoning when message.Role == Role.assistant:
                         if (ReplayPart<MessageContentBlock>(reasoning.ProviderMetadata, call.ProviderId, NativeBlock, MessagesJson.Default)

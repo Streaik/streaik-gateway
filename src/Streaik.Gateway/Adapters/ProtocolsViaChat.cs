@@ -37,9 +37,9 @@ internal static partial class ProtocolAdapters
         }
     }
 
-    internal static async Task<ResponseResult> HostedResponseRoundAsync(GatewayCall call, ResponseRequest request)
+    internal static async Task<ResponseResult> HostedResponseRoundAsync(GatewayCall call, ResponseRequest request, bool preferChat = false)
     {
-        if (call.Get<IResponsesProvider>() is { } responses)
+        if (!preferChat && call.Get<IResponsesProvider>() is { } responses)
             return await responses.CreateResponseAsync(request, call.Headers, call.Ct);
         if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
         {
@@ -61,9 +61,9 @@ internal static partial class ProtocolAdapters
         finally { request.AdditionalProperties = extensions; }
     }
 
-    internal static IAsyncEnumerable<Streaik.Responses.Streaming.ResponseStreamPart> HostedResponseStreamAsync(GatewayCall call, ResponseRequest request)
+    internal static IAsyncEnumerable<Streaik.Responses.Streaming.ResponseStreamPart> HostedResponseStreamAsync(GatewayCall call, ResponseRequest request, bool preferChat = false)
     {
-        if (call.Get<IResponsesProvider>() is { } responses) return responses.StreamResponseAsync(request, call.Headers, call.Ct);
+        if (!preferChat && call.Get<IResponsesProvider>() is { } responses) return responses.StreamResponseAsync(request, call.Headers, call.Ct);
         if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
         {
             StreaikGateway.ValidateAnthropicMessageInputs(call, request.MaxOutputTokens);
@@ -76,9 +76,12 @@ internal static partial class ProtocolAdapters
         {
             request.AdditionalProperties = extensions is null ? null : new(extensions);
             var options = TakeChatOptions(metadataProvider, request.AdditionalProperties);
-            var native = ChatCompletionsBridge.Request(ToMessages(request), request.MaxOutputTokens);
+            var mistral = preferChat && call.ProviderId == "mistral";
+            var native = ChatCompletionsBridge.Request(ToMessages(request, mapReasoningEffort: mistral), request.MaxOutputTokens);
             native.AdditionalProperties = options;
-            return ResponseUpdates(ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), metadataProvider is not null, metadataProvider), metadataProvider);
+            if (mistral && request.Reasoning?.Effort is { } effort) native.ReasoningEffort = new(effort);
+            return ResponseUpdates(ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), metadataProvider is not null,
+                metadataProvider, translatePresentation: mistral), metadataProvider);
         }
         finally { request.AdditionalProperties = extensions; }
     }

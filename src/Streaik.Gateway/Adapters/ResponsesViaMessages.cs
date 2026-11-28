@@ -27,9 +27,9 @@ internal static partial class ProtocolAdapters
         }
     }
 
-    private static MessagesRequest ToMessages(ResponseRequest request, McpToolDefinition[]? mcp = null, bool listings = false)
+    private static MessagesRequest ToMessages(ResponseRequest request, McpToolDefinition[]? mcp = null, bool listings = false, bool mapReasoningEffort = false)
     {
-        if (request.Reasoning is not null || request.Text is not null || request.Prompt is not null || request.Include?.Count > 0
+        if ((!mapReasoningEffort && request.Reasoning is not null) || request.Text is not null || request.Prompt is not null || request.Include?.Count > 0
             || request.ContextManagement?.Length > 0 || request.AdditionalProperties?.Count > 0 || request.TopLogprobs is not null
             || request.Truncation is not null || request.MaxToolCalls is not null || request.ServiceTier is not null || request.Metadata?.Count > 0
             || request.User is not null || request.SafetyIdentifier is not null || request.PromptCacheKey is not null || request.PromptCacheRetention is not null)

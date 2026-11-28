@@ -53,7 +53,7 @@ internal sealed class GatewayCall
     }
 
     // These providers use Chat Completions for translated turns, even when they have other native endpoints.
-    public bool PreferChatBridge => ProviderId is "nebius" or "mixedbread" or "tetrate" or "upstage" or "akashml" or "coralbricks" or "doubleword" or "clarifai" or "tensorblock" or "aichixia" or "edgespeak" or "cognitivessai" or "baseapi" or "agnesai" or "aether" or "anyrouter" or "ambient";
+    public bool PreferChatBridge => ProviderId is "nebius" or "mixedbread" or "tetrate" or "upstage" or "akashml" or "coralbricks" or "doubleword" or "clarifai" or "tensorblock" or "aichixia" or "edgespeak" or "cognitivessai" or "baseapi" or "agnesai" or "aether" or "anyrouter" or "ambient" or "mistral";
     public T? Get<T>() where T : class => Context.RequestServices.GetKeyedService<T>(ProviderId);
     public IChatCompletionsProvider? GetChatBridge() => Get<IChatBridgeProvider>()?.ChatBridge ?? Get<IChatCompletionsProvider>();
     public T Require<T>() where T : class => Get<T>() ?? throw new ContractException("Provider does not support this protocol.");

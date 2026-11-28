@@ -254,10 +254,10 @@ public static partial class StreaikGateway
             { Model = call.Model, Timestamp = DateTimeOffset.UtcNow, Usage = new(), ProviderMetadata = metadata } };
     }
 
-    private static bool UseSpeechFileAdapter(GatewayCall call) => call.DeapiModelType == "speech" || call.ProviderId is "typecast" or "async" or "audixa" or "deepdub" or "astica" or "unrealspeech" or "speechmatics" or "bineric" or "rime" or "stabilityai" or "fishaudio" or "wellsaid" or "neuphonic" or "murfai" or "resembleai" or "soniox" or "runway"
+    private static bool UseSpeechFileAdapter(GatewayCall call) => call.DeapiModelType == "speech" || call.ProviderId is "typecast" or "async" or "audixa" or "deepdub" or "astica" or "unrealspeech" or "speechmatics" or "bineric" or "rime" or "stabilityai" or "fishaudio" or "wellsaid" or "neuphonic" or "murfai" or "resembleai" or "soniox" or "runway" or "mistral"
         && call.Get<IChatAudioRoutingProvider>()?.IsSpeechModel(call.NativeModel) == true;
 
-    private static bool UseTranscriptionFileAdapter(GatewayCall call) => call.DeapiModelType == "transcription" || call.ProviderId is "bergetai" or "speechmatics" or "bineric" or "fishaudio" or "addisai" or "resembleai" or "soniox"
+    private static bool UseTranscriptionFileAdapter(GatewayCall call) => call.DeapiModelType == "transcription" || call.ProviderId is "bergetai" or "speechmatics" or "bineric" or "fishaudio" or "addisai" or "resembleai" or "soniox" or "mistral"
         && call.Get<IChatAudioRoutingProvider>()?.IsTranscriptionModel(call.NativeModel) == true;
 
     private static async Task TranscriptionViaResponsesAsync(GatewayCall call, ResponseRequest request)

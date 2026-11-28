@@ -17,6 +17,7 @@ using Streaik.Providers.CanopyWave;
 using Streaik.Providers.Daglo;
 using Streaik.Providers.Deepdub;
 using Streaik.Providers.Deepgram;
+using Streaik.Providers.Mistral;
 using Streaik.Providers.Fireworks;
 using Streaik.Providers.Gladia;
 using Streaik.Providers.ImageRouter;
@@ -58,7 +59,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         bool avianFishAudioLumaAI = false, bool augureCognitivessAIHorde = false, bool tikHubAIWellSaidYollomi = false,
         bool commonstackLeonardoNeuphonic = false, bool baseApiByteSpaceCambai = false, bool aiBramhaReveAddisAI = false,
         bool antimatterMurfAIPicsart = false, bool inceptionRavenResemble = false, bool aivaraApekeyDeapi = false,
-        bool askArcAgnesSoniox = false, bool anyRouterAetherRunway = false, bool ambientAllTokenCirrascale = false)
+        bool askArcAgnesSoniox = false, bool anyRouterAetherRunway = false, bool ambientAllTokenCirrascale = false, bool mistral = false)
     {
         var requests = new ConcurrentQueue<UpstreamRequest>();
         var builder = WebApplication.CreateSlimBuilder();
@@ -105,6 +106,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (askArcAgnesSoniox) builder.Services.AddAskARC().AddAgnesAI().AddSoniox();
         if (anyRouterAetherRunway) builder.Services.AddAnyRouter().AddAether().AddRunway();
         if (ambientAllTokenCirrascale) builder.Services.AddAmbient().AddAllToken().AddCirrascale();
+        if (mistral) builder.Services.AddMistral();
         if (authorization is null) builder.Services.AddStreaikHeaderAuth();
         var ids = new List<string> { "openai", "anthropic" };
         if (media) ids.AddRange(["deepgram", "imagerouter"]);
@@ -147,6 +149,7 @@ internal sealed class FixtureHost : IAsyncDisposable
         if (askArcAgnesSoniox) ids.AddRange(["askarc", "agnesai", "agnesai-delivery", "soniox", "soniox-speech"]);
         if (anyRouterAetherRunway) ids.AddRange(["anyrouter", "aether", "aether-delivery", "runway", "runway-delivery"]);
         if (ambientAllTokenCirrascale) ids.AddRange(["ambient", "alltoken", "alltoken-assets", "cirrascale"]);
+        if (mistral) ids.Add("mistral");
         foreach (var id in ids)
             builder.Services.AddHttpClient(id).ConfigurePrimaryHttpMessageHandler(
                 () => new Handler(requests, upstream ?? Reply));

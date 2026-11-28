@@ -13,6 +13,7 @@ using Streaik.Providers.CanopyWave;
 using Streaik.Providers.Daglo;
 using Streaik.Providers.Deepdub;
 using Streaik.Providers.Deepgram;
+using Streaik.Providers.Mistral;
 using Streaik.Providers.Fireworks;
 using Streaik.Providers.Gladia;
 using Streaik.Providers.ImageRouter;
@@ -53,7 +54,7 @@ builder.Services.AddEcho().AddOpenAI().AddAnthropic().AddImageRouter().AddDeepgr
     .AddMoonshot().AddJina().AddBlackForestLabs().AddChutes().AddPinecone().AddRecraft()
     .AddArliAI().AddCartesia().AddCeleris().AddBaseten().AddCohere().AddBria()
     .AddCencori().AddDecart().AddElevenLabs()
-    .AddNebius().AddNomic().AddIdeogram()
+    .AddNebius().AddNomic().AddIdeogram().AddMistral()
     .AddTetrate().AddUpstage().AddTypecast()
     .AddHuggingFace().AddMixedbread().AddSegmind()
     .AddAkashML().AddArceeAI().AddAsyncAI()
