@@ -68,6 +68,7 @@ public static partial class StreaikGateway
         {
             var form = await ReadMediaFormAsync(context);
             var json = new JsonObject();
+            var replicate = form["model"].ToString().StartsWith("replicate/", StringComparison.OrdinalIgnoreCase);
             try
             {
                 foreach (var (key, value) in form)
@@ -77,6 +78,7 @@ public static partial class StreaikGateway
                         "n" or "seed" or "partial_images" or "output_compression" or "frame_count" or "frame_duration_ms"
                             when int.TryParse(value, out var number) => JsonValue.Create(number),
                         "svg" or "markup" => JsonNode.Parse(value.ToString()),
+                        "replicate" or "providerOptions" or "inputOverrides" when replicate => JsonNode.Parse(value.ToString()),
                         _ => JsonValue.Create(value.ToString())
                     };
                 request = BindImageSettings<OpenAIImageEditRequest>(json);
