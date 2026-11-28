@@ -35,11 +35,17 @@ internal static partial class VercelAdapter
         // CAMBAI translates the last user turn rather than sending conversation history to the translation API.
         var translation = call.ProviderId == "cambai";
         var messages = translation ? request.Messages.Where(message => message.Role == Role.user).TakeLast(1) : request.Messages;
+        var multiAgent = OpenAIMultiAgent(call, request);
         foreach (var message in messages)
+        foreach (var step in multiAgent && message.Role == Role.assistant ? ResponseSteps(message.Parts) : new[] { message.Parts })
         {
+            var snapshot = multiAgent && message.Role == Role.assistant ? ReadOpenAIHistory(step, call.Model) : [];
+            var replayedFunctions = AppendOpenAIHistory(snapshot, step, input, seen);
+            var replayedText = snapshot.Any(item => StringField(item, "type") == "message" && StringField(item, "role") == "assistant"
+                && !IsSubagent(item) && ReplayOpenAIMessage(item));
             var results = new List<ResponseFunctionCallOutputItem>();
             var userParts = new List<ResponseContentPart>();
-            foreach (var part in message.Parts)
+            foreach (var part in step)
             {
                 if (translation && part is not TextUIPart) continue;
                 switch (part)
@@ -48,8 +54,9 @@ internal static partial class VercelAdapter
                         userParts.Add(new InputTextPart(text.Text));
                         break;
                     case TextUIPart text:
+                        if (replayedText) break;
                         if (message.Role == Role.assistant && ReplayPart<ResponseInputItem>(text.ProviderMetadata,
-                            call.ProviderId, NativeItem, ResponseJson.Default) is ResponseInputMessage { Role: ResponseRole.Assistant, Id: { } id } native)
+                            call.ProviderId, NativeItem, ResponseJson.Default) is ResponseInputMessage { Role: ResponseRole.Assistant, Id: { } id, Agent: null } native)
                         {
                             if (seen.Add(id)) input.Add(native);
                         }
@@ -57,8 +64,9 @@ internal static partial class VercelAdapter
                             { Role.assistant => ResponseRole.Assistant, Role.system => ResponseRole.System, _ => ResponseRole.User }, text.Text));
                         break;
                     case ReasoningUIPart thought when message.Role == Role.assistant:
+                        if (snapshot.Length > 0) break;
                         if (includeEncryptedReasoning && ReplayPart<ResponseInputItem>(thought.ProviderMetadata, call.ProviderId, NativeItem, ResponseJson.Default)
-                            is ResponseReasoningItem { Id: { } thoughtId, EncryptedContent: not null } nativeReasoning && seen.Add(thoughtId)) input.Add(nativeReasoning);
+                            is ResponseReasoningItem { Id: { } thoughtId, EncryptedContent: not null, Agent: null } nativeReasoning && seen.Add(thoughtId)) input.Add(nativeReasoning);
                         break;
                     case ToolInvocationPart tool when ProviderMcpApproval.IsApproval(tool):
                         if (message.Role != Role.assistant) throw new ContractException("Invalid provider MCP approval.", 403);
@@ -76,6 +84,7 @@ internal static partial class VercelAdapter
                         input.AddRange(UpstreamMcpReview.Resolve(call, request, tools, tool, hosted));
                         break;
                     case ToolInvocationPart { ProviderExecuted: true } tool when message.Role == Role.assistant:
+                        if (IsOpenAIHostedTool(tool)) break; // The ordered native history already owns this projection.
                         if (call.ProviderId == "openai" && (tool.ToolName == "tool_search" || tool.Type == "tool-tool_search"))
                         {
                             var searchCall = Replay<ResponseInputItem>(tool.CallProviderMetadata, call.ProviderId, NativeItem, ResponseJson.Default);
@@ -146,9 +155,10 @@ internal static partial class VercelAdapter
                             }
                             break;
                         }
-                        input.Add(new ResponseFunctionCallItem { CallId = tool.ToolCallId, Name = ToolName(tool),
-                            Namespace = tool.ToolMetadata?.TryGetValue("namespace", out var space) == true && space.ValueKind == JsonValueKind.String
-                                ? space.GetString() : null, Arguments = ToolInput(tool.Input).GetRawText() });
+                        if (!replayedFunctions.Contains(tool.ToolCallId))
+                            input.Add(new ResponseFunctionCallItem { CallId = tool.ToolCallId, Name = ToolName(tool),
+                                Namespace = tool.ToolMetadata?.TryGetValue("namespace", out var space) == true && space.ValueKind == JsonValueKind.String
+                                    ? space.GetString() : null, Arguments = ToolInput(tool.Input).GetRawText() });
                         results.Add(new ResponseFunctionCallOutputItem { CallId = tool.ToolCallId, Output = output });
                         break;
                     case StepStartUIPart or StartStepUIPart or SourceUIPart or SourceDocumentPart or MessageMetadataUIPart: break;
@@ -258,10 +268,12 @@ internal static partial class VercelAdapter
     private static async IAsyncEnumerable<UIMessagePart> ResponseParts(GatewayCall call,
         IAsyncEnumerable<ResponseStreamPart> source, GatewayContainerArtifacts.Turn artifacts, bool includeEncryptedReasoning,
         Func<ResponseMcpApprovalRequestItem, Task<IReadOnlyList<UIMessagePart>>>? convertReview = null,
-         IReadOnlyList<UIMessagePart>? hostedApproval = null, bool stepStarted = false)
+         IReadOnlyList<UIMessagePart>? hostedApproval = null, bool stepStarted = false, bool multiAgent = false)
     {
         var text = new HashSet<(string Item, int Index)>();
         var reasoning = new HashSet<string>(StringComparer.Ordinal);
+        var subagents = new HashSet<string>(StringComparer.Ordinal);
+        var agentOutput = multiAgent ? new OpenAIAgentOutput(call.Model) : null;
         var calls = new Dictionary<string, string>(StringComparer.Ordinal);
         var sentCalls = new HashSet<string>(StringComparer.Ordinal);
         var searchItems = new HashSet<string>(StringComparer.Ordinal);
@@ -305,21 +317,25 @@ internal static partial class VercelAdapter
         {
             artifacts.Observe(ev);
             if (!step && ev is not (ResponseError or ResponseFailed)) { step = true; yield return new StartStepUIPart(); }
+            if (multiAgent && ev is ResponseStreamItemEvent { Item: { Id: { } agentItemId } agentItem }
+                && IsSubagent(agentItem.Agent ?? ev.Agent)) subagents.Add(agentItemId);
+            if (agentOutput is not null)
+                foreach (var part in agentOutput.Observe(ev)) yield return part;
             switch (ev)
             {
-                case ResponseOutputTextDelta delta:
+                case ResponseOutputTextDelta delta when !multiAgent || !IsSubagent(delta.Agent) && !subagents.Contains(delta.ItemId):
                     var key = (delta.ItemId, delta.ContentIndex);
                     if (text.Add(key)) yield return new TextStartUIMessageStreamPart { Id = TextId(key) };
                     yield return new TextDeltaUIMessageStreamPart { Id = TextId(key), Delta = delta.Delta }; break;
-                case ResponseRefusalDelta delta:
+                case ResponseRefusalDelta delta when !multiAgent || !IsSubagent(delta.Agent) && !subagents.Contains(delta.ItemId):
                     refusal = true;
                     var refusalKey = (delta.ItemId, delta.ContentIndex);
                     if (text.Add(refusalKey)) yield return new TextStartUIMessageStreamPart { Id = TextId(refusalKey) };
                     yield return new TextDeltaUIMessageStreamPart { Id = TextId(refusalKey), Delta = delta.Delta }; break;
-                case ResponseReasoningSummaryTextDelta delta:
+                case ResponseReasoningSummaryTextDelta delta when !multiAgent || !IsSubagent(delta.Agent) && !subagents.Contains(delta.ItemId):
                     if (reasoning.Add(delta.ItemId)) yield return new ReasoningStartUIPart { Id = delta.ItemId };
                     yield return new ReasoningDeltaUIPart { Id = delta.ItemId, Delta = delta.Delta }; break;
-                case ResponseOutputItemAdded { Item: { Type: "reasoning", Id: { } thoughtId } } when reasoning.Add(thoughtId):
+                case ResponseOutputItemAdded { Item: { Type: "reasoning", Id: { } thoughtId } } when !subagents.Contains(thoughtId) && reasoning.Add(thoughtId):
                     yield return new ReasoningStartUIPart { Id = thoughtId }; break;
                 case ResponseOutputItemAdded { Item: { Type: "function_call", Id: { } itemId, CallId: { } callId } item }:
                     calls[itemId] = callId;
@@ -342,11 +358,14 @@ internal static partial class VercelAdapter
 
             var result = ev switch { ResponseCompleted completed => completed.Response, ResponseIncompleteEvent incomplete => incomplete.Response, _ => null };
             if (result is null) continue;
+            if (agentOutput is not null)
+                foreach (var part in agentOutput.Complete(result, ev is ResponseCompleted)) yield return part;
             foreach (var item in result.OutputItems)
             {
                 switch (item)
                 {
-                    case ResponseInputMessage { Id: { } id } message:
+                    case ResponseInputMessage { Id: { } id } message when !multiAgent || message.Role == ResponseRole.Assistant
+                        && !IsSubagent(message.Agent) && !subagents.Contains(id):
                         var native = Serialize(message);
                         var parts = message.Content.Parts ?? (message.Content.Text is { } plain ? [new OutputTextPart(plain)] : []);
                         for (var index = 0; index < parts.Count; index++)
@@ -358,8 +377,9 @@ internal static partial class VercelAdapter
                                 yield return new TextStartUIMessageStreamPart { Id = TextId(key) };
                                 yield return new TextDeltaUIMessageStreamPart { Id = TextId(key), Delta = part.Text };
                             }
+                            var metadata = new Dictionary<string, object> { [NativeItem] = native };
                             yield return new TextEndUIMessageStreamPart { Id = TextId(key), ProviderMetadata = new()
-                                { [call.ProviderId] = new Dictionary<string, object> { [NativeItem] = native } } };
+                                { [call.ProviderId] = agentOutput?.WithFallback(metadata) ?? metadata } };
                         }
                         break;
                     case ResponseImageGenerationCallItem { Result.Length: > 0 } picture:
@@ -367,15 +387,16 @@ internal static partial class VercelAdapter
                             ? format.GetString() switch { "jpeg" => "image/jpeg", "webp" => "image/webp", _ => "image/png" } : "image/png";
                         yield return new FileUIPart { MediaType = mime, Url = $"data:{mime};base64,{picture.Result}" };
                         break;
-                    case ResponseReasoningItem { Id: { } id } thought:
+                    case ResponseReasoningItem { Id: { } id } thought when !multiAgent || !IsSubagent(thought.Agent) && !subagents.Contains(id):
                         if (!reasoning.Remove(id))
                         {
                             yield return new ReasoningStartUIPart { Id = id };
                             var summary = string.Join('\n', thought.Summary.Select(part => part.Text));
                             if (summary.Length > 0) yield return new ReasoningDeltaUIPart { Id = id, Delta = summary };
                         }
-                        yield return new ReasoningEndUIPart { Id = id, ProviderMetadata = includeEncryptedReasoning
-                            ? new() { [call.ProviderId] = new() { [NativeItem] = Serialize(thought) } } : null };
+                        var thoughtMetadata = includeEncryptedReasoning ? new Dictionary<string, object> { [NativeItem] = Serialize(thought) } : null;
+                        thoughtMetadata = agentOutput?.WithFallback(thoughtMetadata) ?? thoughtMetadata;
+                        yield return new ReasoningEndUIPart { Id = id, ProviderMetadata = thoughtMetadata is null ? null : new() { [call.ProviderId] = thoughtMetadata } };
                         break;
                     case ResponseFunctionCallItem function when sentCalls.Add(function.CallId):
                         yield return new ToolCallPart { ToolCallId = function.CallId, ToolName = function.Name, Dynamic = true,
@@ -403,6 +424,7 @@ internal static partial class VercelAdapter
                     case ResponseToolSearchCallItem or ResponseToolSearchOutputItem:
                         foreach (var part in SearchParts(item)) yield return part;
                         break;
+                    case ResponseWebSearchCallItem when multiAgent: break;
                     default:
                         if (ProviderTool(item) is ({ } handle, { } toolName, var _))
                         {

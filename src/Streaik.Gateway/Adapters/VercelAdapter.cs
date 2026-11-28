@@ -30,6 +30,9 @@ internal static partial class VercelAdapter
         var hostedApproval = new HostedMcpChatApproval(call, request, hosted, providerMcp, Option(request, call.ProviderId, "tools"), signer, upstreamReviews);
         var mistralChat = call.ProviderId == "mistral";
         var nativeResponses = !mistralChat && (!call.PreferChatBridge || providerMcp is { Length: > 0 }) && call.Get<IResponsesProvider>() is not null;
+        var multiAgent = nativeResponses && OpenAIMultiAgent(call, request);
+        foreach (var message in request.Messages)
+            message.Parts.RemoveAll(part => part is DataUIPart || !multiAgent && part is ToolInvocationPart tool && IsOpenAIHostedTool(tool));
         var messagesMcp = !nativeResponses && providerMcp is { Length: > 0 } && call.ProviderId == "anthropic" && call.Get<IMessagesProvider>() is not null;
         if (providerMcp is { Length: > 0 } && !nativeResponses && !messagesMcp)
             throw new ContractException("The selected provider route cannot forward provider-executed MCP.", 422);
@@ -181,7 +184,7 @@ internal static partial class VercelAdapter
                 started = await WriteApprovedActivity(write);
                 var handled = await GatewayHostedTools.RunAsync(call, native, hosted, hostedApproval, Observe);
                 return WithApprovals(ResponseParts(call, GatewayHostedTools.Events(handled.Events, call.Ct), new GatewayContainerArtifacts.Turn(call),
-                    native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), handled.Approval, started));
+                    native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), handled.Approval, started, multiAgent));
             });
             return;
         }
@@ -196,12 +199,12 @@ internal static partial class VercelAdapter
                 {
                     await WriteApprovedActivity(write);
                     return WithApprovals(ResponseParts(call, responses.StreamResponseAsync(native, call.Headers, call.Ct), artifacts,
-                        native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), stepStarted: true));
+                        native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), stepStarted: true, multiAgent: multiAgent));
                 });
                 return;
             }
             stream = ResponseParts(call, responses.StreamResponseAsync(native, call.Headers, call.Ct), artifacts,
-                native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native));
+                native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), multiAgent: multiAgent);
         }
         else if (!call.PreferChatBridge && call.Get<IMessagesProvider>() is { } messages)
         {
