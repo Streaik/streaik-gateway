@@ -54,17 +54,27 @@ public sealed class OpenAIMultiAgentTests
         Assert.Equal(new[] { "spawn", "ws_1" }, hosted.Select(p => (string?)p["toolCallId"]));
         Assert.Equal("/root/research", (string?)hosted[1]["input"]!["agent"]);
         Assert.DoesNotContain("opaque-task", hosted[0]["input"]!.ToJsonString());
-        Assert.Single(toolInputs.Where(p => (bool?)p["providerExecuted"] != true));
+        var clientCall = Assert.Single(toolInputs.Where(p => (bool?)p["providerExecuted"] != true));
+        Assert.Equal("call_lookup", (string?)clientCall["toolCallId"]);
+        var approval = Assert.Single(parts.Where(p => (string?)p["type"] == "tool-approval-request"));
+        Assert.Equal((string?)clientCall["toolCallId"], (string?)approval["toolCallId"]);
+        Assert.False(string.IsNullOrWhiteSpace((string?)approval["approvalId"]));
         var results = parts.Where(p => (string?)p["type"] == "tool-output-available").ToArray();
         Assert.Equal("/root/research", (string?)results.First(p => (string?)p["toolCallId"] == "spawn")["output"]!["task_name"]);
         var saved = Assert.Single(results.Where(p => p["providerMetadata"]?["openai"]?["responsesReplay"] is not null));
         Assert.True(JsonNode.DeepEquals(output, saved["providerMetadata"]!["openai"]!["responsesReplay"]!["items"]));
 
-        // A new request reconstructs everything from the saved UI parts, not gateway memory.
+        // A new request reconstructs everything from the saved UI parts, including the approved client result.
         var assistant = JsonNode.Parse("""
-            {"id":"a","role":"assistant","parts":[{"type":"step-start"},{"type":"text","text":"Root conclusion"},
-            {"type":"dynamic-tool","toolName":"lookup","toolCallId":"call_lookup","state":"output-available","input":{"value":1},"output":{"checked":true}}]}
+            {"id":"a","role":"assistant","parts":[{"type":"step-start"},{"type":"text","text":"Root conclusion"}]}
             """)!;
+        assistant["parts"]!.AsArray().Add(new JsonObject
+        {
+            ["type"] = "dynamic-tool", ["state"] = "output-available",
+            ["toolCallId"] = clientCall["toolCallId"]!.DeepClone(), ["toolName"] = clientCall["toolName"]!.DeepClone(),
+            ["input"] = clientCall["input"]!.DeepClone(), ["output"] = new JsonObject { ["checked"] = true },
+            ["approval"] = new JsonObject { ["id"] = approval["approvalId"]!.DeepClone(), ["approved"] = true }
+        });
         var anchor = Assert.Single(hosted.Where(p => (string?)p["toolCallId"] == (string?)saved["toolCallId"]));
         assistant["parts"]!.AsArray().Add(new JsonObject
         {
