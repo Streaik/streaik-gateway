@@ -43,6 +43,8 @@ public sealed class ModelDirectoryTests
                   {"id":"gpt-6.2","tags":{"unexpected":true}}, {"id":"text-embedding-3-small"}, {"id":"image-to-video"},
                   {"id":"vendor/realtime-dashboard"}, {"id":"gpt-4o-audio-preview"},
                   {"id":"gpt-realtime-mini","tags":["Voice","real-time","Realtime","voice"]},
+                  {"id":"gpt-realtime-2.1-mini"}, {"id":"gpt-realtime-2.1"}, {"id":"gpt-realtime-2"},
+                  {"id":"gpt-realtime-1.5"}, {"id":"gpt-realtime-2.1-mini-2026-10-01"},
                   {"id":"gpt-realtime-transcribe","type":"transcription","tags":["asr"]},
                   {"id":"gpt-live-1"}, {"id":"gpt-live-1-2026-10-01","type":"language"},
                   {"id":"gpt-live-transcribe"}, {"id":"gpt-live-transcribe-2026-10-01"}, {"id":"gpt-realtime-whisper"}, {"id":"gpt-transcribe"},
@@ -71,13 +73,15 @@ public sealed class ModelDirectoryTests
         Check("openai/gpt-4o-audio-preview", "audio");
         Check("openai/gpt-image-1", "language"); // Explicit provider type wins; streaming is not realtime.
         Check("openai/gpt-realtime-mini", "audio", "realtime");
+        foreach (var name in new[] { "gpt-realtime-2.1-mini", "gpt-realtime-2.1", "gpt-realtime-2", "gpt-realtime-1.5", "gpt-realtime-2.1-mini-2026-10-01" })
+            Check($"openai/{name}", "audio", "realtime", "realtime-speech");
         Check("openai/gpt-realtime-transcribe", "transcription", "realtime");
         Check("openai/gpt-live-1", "audio", "realtime");
         Check("openai/gpt-live-1-2026-10-01", "audio", "realtime");
         Check("openai/gpt-live-transcribe", "transcription", "realtime");
         Check("openai/gpt-live-transcribe-2026-10-01", "transcription", "realtime");
         Check("openai/gpt-realtime-whisper", "transcription", "realtime");
-        Check("openai/gpt-transcribe", "transcription");
+        Check("openai/gpt-transcribe", "transcription", "realtime");
         Check("openai/gpt-4o-mini-tts", "speech");
         Check("openai/whisper-1", "transcription");
         Check("google/gemini-2.5-flash-native-audio-preview", "audio", "realtime");

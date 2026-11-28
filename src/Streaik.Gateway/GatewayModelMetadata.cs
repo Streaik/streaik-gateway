@@ -20,9 +20,11 @@ internal static partial class GatewayModelMetadata
         }
 
         var openAiVoice = provider == "openai" && (OpenAiRealtime().IsMatch(name) || OpenAiLive().IsMatch(name));
-        if (IsRealtime(type) || openAiVoice || IsKnownLiveModel(provider, name)) tags.Add("realtime");
+        var openAiDualTranscription = provider == "openai" && name == "gpt-transcribe";
+        if (IsRealtime(type) || openAiVoice || openAiDualTranscription || IsKnownLiveModel(provider, name)) tags.Add("realtime");
+        if (provider == "openai" && OpenAiRealtimeSpeech().IsMatch(name)) tags.Add("realtime-speech");
         model.Tags = tags.Count > 0 ? tags.ToArray() : null;
-        model.Type = openAiVoice ? (IsTranscription(name) ? "transcription" : "audio") : type switch
+        model.Type = (openAiVoice || openAiDualTranscription) ? (IsTranscription(name) ? "transcription" : "audio") : type switch
         {
             null or "" or "model" => Infer(provider, name, tags.Contains("realtime")),
             "chat" or "text" or "llm" => "language",
@@ -69,6 +71,8 @@ internal static partial class GatewayModelMetadata
 
     [GeneratedRegex("^gpt-(?:4o-)?realtime(?:-|$)")]
     private static partial Regex OpenAiRealtime();
+    [GeneratedRegex(@"^gpt-realtime-(?:2\.1(?:-mini)?|2|1\.5)(?:-[0-9]{4}-[0-9]{2}-[0-9]{2})?$")]
+    private static partial Regex OpenAiRealtimeSpeech();
     [GeneratedRegex("^gpt-live(?:-|$)")]
     private static partial Regex OpenAiLive();
     [GeneratedRegex("^(?:gpt-(?:3\\.5|4o|[4-9](?:\\.\\d+)?)|o[1-9])(?:-|$)")]
