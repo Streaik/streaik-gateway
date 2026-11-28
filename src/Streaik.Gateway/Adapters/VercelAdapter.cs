@@ -228,12 +228,13 @@ internal static partial class VercelAdapter
                 || request.Messages.SelectMany(message => message.Parts).OfType<ToolInvocationPart>().Any(tool => tool.ProviderExecuted == true))
                 throw new ContractException("Provider-specific Vercel options require a native adapter.");
             var translatePresentation = call.ProviderId is "cohere" or "mistral";
+            var googleInteractions = call.ProviderId == "google";
             var native = ChatCompletionsBridge.Request(MessagesRequestFrom(call, request, viaChat: true), request.MaxOutputTokens,
-                translatePresentation, documentUrls: mistralChat);
+                translatePresentation, documentUrls: mistralChat, googleInteractions: googleInteractions);
             if (request.Reasoning is { } effort) native.ReasoningEffort = new ChatCompletionReasoningEffort(effort);
             if (nativeOptions) native.AdditionalProperties = ApplyNativeOptions(call, request, native, Web);
             stream = MessageParts(call, ChatCompletionsBridge.Updates(chat.StreamChatAsync(native, call.Headers, call.Ct), nativeOptions,
-                translatePresentation: translatePresentation));
+                translatePresentation: translatePresentation, googleInteractions: googleInteractions));
         }
         else if (call.Get<IImageProvider>() is { } images)
         {

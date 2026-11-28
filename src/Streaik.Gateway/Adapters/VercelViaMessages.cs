@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Streaik.Messages;
+using Streaik.Providers;
 using Streaik.Responses;
 using Streaik.Tools;
 using Streaik.Vercel.Models;
@@ -24,6 +25,7 @@ internal static partial class VercelAdapter
         if (request.ResponseFormat is not null || request.Verbosity is not null || request.MaxToolCalls is not null)
             throw new ContractException("This Vercel option has no Messages translation.");
         var history = new MessagesHistory();
+        var googleInteractions = viaChat && call.ProviderId == "google";
         var deferred = !viaChat && call.ProviderId == "anthropic" && request.Tools?.Any(tool => tool.Name == ClientToolSearch) == true
             ? request.Tools.Where(tool => tool.DeferLoading == true && tool.Name != ClientToolSearch).Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal)
             : [];
@@ -31,6 +33,11 @@ internal static partial class VercelAdapter
         foreach (var message in request.Messages)
         {
             var results = new List<(string Id, MessagesContent Output, bool IsError)>();
+            void FlushResults()
+            {
+                foreach (var (id, output, isError) in results) history.Result(id, output, isError);
+                results.Clear();
+            }
             if (message.Role == Role.assistant && !viaChat && call.ProviderId == "anthropic" && MessagesMcp.CanReplayListings(call.Headers)
                 && message.Metadata?.GetValueOrDefault(McpListingsMetadata) is JsonElement { ValueKind: JsonValueKind.Array } listings)
                 foreach (var listing in listings.EnumerateArray())
@@ -39,12 +46,24 @@ internal static partial class VercelAdapter
             foreach (var part in message.Parts)
                 switch (part)
                 {
+                    case StepStartUIPart or StartStepUIPart when googleInteractions:
+                        // useChat can append multiple gateway requests to one assistant message.
+                        // Keep parallel calls together, then replay their results before the next model step.
+                        FlushResults();
+                        break;
                     case TextUIPart text: history.Text(message.Role.ToString(), text.Text); break;
                     case FileUIPart file when message.Role == Role.user:
                         history.Add("user", ChatAttachments.ToMessages(file, viaChat, viaChat && call.ProviderId == "mistral")); break;
                     case FileUIPart when message.Role == Role.assistant: break;
                     case ReasoningUIPart reasoning when message.Role == Role.assistant:
-                        if (ReplayPart<MessageContentBlock>(reasoning.ProviderMetadata, call.ProviderId, NativeBlock, MessagesJson.Default)
+                        if (googleInteractions)
+                        {
+                            if (reasoning.ProviderMetadata?.GetValueOrDefault("google") is JsonElement { ValueKind: JsonValueKind.Object } provider
+                                && provider.TryGetProperty(GoogleGeminiProvider.InteractionReplayKey, out var snapshot)
+                                && StringField(snapshot, "model") == call.NativeModel)
+                                history.Add("assistant", new() { Type = GoogleGeminiProvider.InteractionReplayKey, Data = snapshot.GetRawText() });
+                        }
+                        else if (ReplayPart<MessageContentBlock>(reasoning.ProviderMetadata, call.ProviderId, NativeBlock, MessagesJson.Default)
                             is { Type: "thinking" or "redacted_thinking" } block) history.Add("assistant", block);
                         break;
                     case ToolInvocationPart tool when HostedMcpChatApproval.IsContinuation(tool):
@@ -82,7 +101,7 @@ internal static partial class VercelAdapter
                     case StepStartUIPart or StartStepUIPart or SourceUIPart or SourceDocumentPart or MessageMetadataUIPart: break;
                     default: throw new ContractException($"Vercel part '{part.Type}' has no Messages translation.");
                 }
-            foreach (var (id, output, isError) in results) history.Result(id, output, isError);
+            FlushResults();
         }
         var anthropic = !viaChat && call.ProviderId == "anthropic";
         var maxTokens = request.MaxOutputTokens;
@@ -317,6 +336,15 @@ internal static partial class VercelAdapter
                     MessagesHistory.MergeUsage(usage, part.Usage); break;
                 case { Type: "message_stop" }:
                     if (mcpActivityOnly) yield break;
+                    if (call.ProviderId == "google"
+                        && part.AdditionalProperties?.GetValueOrDefault(GoogleGeminiProvider.InteractionReplayKey) is { ValueKind: JsonValueKind.Object } snapshot)
+                    {
+                        // A metadata-only reasoning part survives browser round-trips without displaying the signature.
+                        var replayId = $"{id}/google-interactions-replay";
+                        yield return new ReasoningStartUIPart { Id = replayId };
+                        yield return new ReasoningEndUIPart { Id = replayId, ProviderMetadata = new()
+                            { ["google"] = new() { [GoogleGeminiProvider.InteractionReplayKey] = snapshot } } };
+                    }
                     if (listings.Count != 0) yield return new MessageMetadataUIPart { MessageMetadata = new() { [McpListingsMetadata] = listings } };
                     yield return Finish(call, stop switch { "tool_use" => "tool-calls", "max_tokens" or "model_context_window_exceeded" => "length",
                         "refusal" => "content-filter", "pause_turn" => "other", _ => "stop" }, MessagesHistory.TotalInput(usage), usage.OutputTokens,

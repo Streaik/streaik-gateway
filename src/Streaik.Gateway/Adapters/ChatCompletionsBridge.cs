@@ -10,7 +10,8 @@ namespace Streaik.Gateway;
 // This is an in-process mapping: no Messages endpoint or provider is called.
 internal static class ChatCompletionsBridge
 {
-    public static ChatCompletionOptions Request(MessagesRequest request, int? maxTokens, bool translatePresentation = false, bool documentUrls = false)
+    public static ChatCompletionOptions Request(MessagesRequest request, int? maxTokens, bool translatePresentation = false,
+        bool documentUrls = false, bool googleInteractions = false)
     {
         if (request.CacheControl is not null || request.Container is not null || request.InferenceGeo is not null
             || request.Metadata is not null || request.OutputConfig is not null || request.ServiceTier is not null
@@ -34,6 +35,7 @@ internal static class ChatCompletionsBridge
             var text = new StringBuilder();
             var calls = new List<ChatCompletionToolCall>();
             var parts = new List<ChatMessageContentPart>();
+            Dictionary<string, JsonElement>? extensions = null;
             void FlushText()
             {
                 if (text.Length > 0) parts.Add(new ChatMessageTextPart { Text = text.ToString() });
@@ -46,10 +48,11 @@ internal static class ChatCompletionsBridge
                 if (parts.Count > 0) { FlushText(); content = new ChatMessageContent(parts); }
                 else content = text.Length == 0 ? ChatMessageContent.Null : text.ToString();
                 messages.Add(new() { Role = message.Role, Content = content,
-                    ToolCalls = calls.Count == 0 ? null : calls.ToArray() });
+                    ToolCalls = calls.Count == 0 ? null : calls.ToArray(), AdditionalProperties = extensions });
                 text.Clear();
                 calls.Clear();
                 parts.Clear();
+                extensions = null;
             }
             foreach (var block in blocks)
             {
@@ -75,7 +78,12 @@ internal static class ChatCompletionsBridge
                           ["document_name"] = JsonSerializer.SerializeToElement(block.Title) } }); break;
                     case { Type: "thinking", Thinking: { Length: > 0 } thought } when translatePresentation && message.Role == "assistant":
                         FlushText(); parts.Add(new ChatMessageUnknownContentPart { AdditionalProperties = new()
-                        { ["type"] = JsonSerializer.SerializeToElement("thinking"), ["thinking"] = JsonSerializer.SerializeToElement(thought) } }); break;
+                          { ["type"] = JsonSerializer.SerializeToElement("thinking"), ["thinking"] = JsonSerializer.SerializeToElement(thought) } }); break;
+                    case { Type: GoogleGeminiProvider.InteractionReplayKey, Data: { Length: > 0 } snapshot }
+                        when googleInteractions && message.Role == "assistant":
+                        using (var replay = JsonDocument.Parse(snapshot))
+                            extensions = new() { [GoogleGeminiProvider.InteractionReplayKey] = replay.RootElement.Clone() };
+                        break;
                     case { Type: "tool_use", Id: { Length: > 0 } id, Name: { Length: > 0 } name, Caller: null,
                         Input: { ValueKind: JsonValueKind.Object } input } when message.Role == "assistant":
                         calls.Add(new ChatCompletionMessageToolCall { Id = id, Function = new() { Name = name, Arguments = input.GetRawText() } });
@@ -155,7 +163,7 @@ internal static class ChatCompletionsBridge
     }
 
     public static async IAsyncEnumerable<MessageStreamPart> Updates(IAsyncEnumerable<ChatCompletionUpdate> source,
-        bool preserveNativeFields = false, string? metadataProvider = null, bool translatePresentation = false)
+        bool preserveNativeFields = false, string? metadataProvider = null, bool translatePresentation = false, bool googleInteractions = false)
     {
         var tools = new Dictionary<int, ToolState>();
         var next = 0;
@@ -169,12 +177,15 @@ internal static class ChatCompletionsBridge
         var ids = new HashSet<string>(StringComparer.Ordinal);
         Dictionary<string, JsonElement>? nativeFields = preserveNativeFields ? new(StringComparer.Ordinal) : null;
         List<object>? nativeDeltas = preserveNativeFields ? [] : null;
+        JsonElement? interactionReplay = null;
         await foreach (var part in source)
         {
             if (part.AdditionalProperties?.TryGetValue("error", out var error) == true)
                 throw new UpstreamStreamException(ProviderErrorText.Message(error));
             if (nativeFields is not null && part.AdditionalProperties is { } extra)
                 foreach (var (name, value) in extra) nativeFields[name] = value;
+            if (googleInteractions && part.AdditionalProperties?.GetValueOrDefault(GoogleGeminiProvider.InteractionReplayKey) is { ValueKind: JsonValueKind.Object } replay)
+                interactionReplay = replay;
             usage = part.Usage ?? usage;
             cost = GatewayPricing.Cost(GatewayPricing.ChatMetadata(part.AdditionalProperties)) ?? cost;
             if (part.Choices?.FirstOrDefault(choice => choice.Index == 0) is not { } choice) continue;
@@ -262,6 +273,8 @@ internal static class ChatCompletionsBridge
             metadata = ProviderMetadata(metadataProvider, nativeFields, usage, metadata);
         else if (nativeFields is not null && usage?.AdditionalProperties?.Count > 0)
             AddRaw(nativeFields, "usage_extensions", usage.AdditionalProperties);
+        if (interactionReplay is { } snapshot)
+            (nativeFields ??= new(StringComparer.Ordinal))[GoogleGeminiProvider.InteractionReplayKey] = snapshot;
         yield return new MessageStreamPart { Type = "message_stop", Metadata = metadata, AdditionalProperties = metadataProvider is null ? nativeFields : null };
     }
 

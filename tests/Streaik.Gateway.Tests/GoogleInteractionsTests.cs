@@ -1,5 +1,7 @@
 using System.Net;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.DependencyInjection;
+using Streaik.Vercel.Security;
 
 namespace Streaik.Gateway.Tests;
 
@@ -286,6 +288,132 @@ public sealed class GoogleInteractionsTests
             { ["type"] = "tool_result", ["tool_use_id"] = (string?)message["content"]![0]!["id"], ["content"] = "Found" }) });
         using var second = await host.PostAsync("/v1/messages", request.ToJsonString(), ("x-google-key", "gemini-test"));
         Assert.Contains("From Gemini", await GatewayTests.Success(second));
+    }
+
+    [Fact]
+    public async Task Api_chat_replays_Gemini_tool_rounds_in_order_with_stateless_native_steps()
+    {
+        static JsonNode[] Steps(string json) => JsonNode.Parse(json)!.AsArray().Select(node => node!).ToArray();
+
+        var expected = new List<JsonNode>(Steps("""[{"type":"user_input","content":[{"type":"text","text":"hello"}]}]"""));
+        var firstRound = Steps("""
+            [{"type":"thought","signature":"thought-one","summary":[{"type":"text","text":"Checking history."}]},
+             {"type":"model_output","content":[{"type":"text","text":"Let me look."}]},
+             {"type":"function_call","id":"fn_a","name":"lookup","arguments":{"city":"Delft"},"signature":"signature-a"},
+             {"type":"function_call","id":"fn_b","name":"lookup","arguments":{"city":"Leiden"},"signature":"signature-b"}]
+            """);
+        var secondRound = Steps("""
+            [{"type":"thought","signature":"thought-two"},
+             {"type":"function_call","id":"fn_c","name":"lookup","arguments":{},"signature":"signature-c"}]
+            """);
+        var thirdRound = Steps("""
+            [{"type":"thought","signature":"thought-three"},
+             {"type":"model_output","content":[{"type":"text","text":"Found it."}]}]
+            """);
+        var round = 0;
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            AssertInteraction(request, stream: true);
+            Assert.False((bool?)request.Body!["store"]);
+            Assert.Null(request.Body["previous_interaction_id"]);
+            var input = request.Body["input"]!.AsArray();
+            Assert.Equal(expected.Count, input.Count);
+            for (var index = 0; index < expected.Count; index++)
+                Assert.True(JsonNode.DeepEquals(expected[index], input[index]), $"Step {index}: expected {expected[index]}, got {input[index]}");
+            return ++round switch
+            {
+                1 => FixtureHost.Sse(
+                    """{"event_type":"step.start","index":0,"step":{"type":"thought"}}""",
+                    """{"event_type":"step.delta","index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":"Checking history."}}}""",
+                    """{"event_type":"step.delta","index":0,"delta":{"type":"thought_signature","signature":"thought-one"}}""",
+                    """{"event_type":"step.stop","index":0}""",
+                    """{"event_type":"step.delta","index":1,"delta":{"type":"text","text":"Let me look."}}""",
+                    """{"event_type":"step.start","index":2,"step":{"type":"function_call","id":"fn_a","name":"lookup","arguments":{"city":"Delft"},"signature":"signature-a"}}""",
+                    """{"event_type":"step.delta","index":2,"delta":{"type":"arguments_delta","arguments":"{\"city\":"}}""",
+                    """{"event_type":"step.start","index":3,"step":{"type":"function_call","id":"fn_b","name":"lookup","arguments":{},"signature":"signature-b"}}""",
+                    """{"event_type":"step.delta","index":3,"delta":{"type":"arguments_delta","arguments":"{\"city\":\"Leiden\"}"}}""",
+                    """{"event_type":"step.delta","index":2,"delta":{"type":"arguments_delta","arguments":"\"Delft\"}"}}""",
+                    """{"event_type":"step.stop","index":2}""",
+                    """{"event_type":"step.stop","index":3}""",
+                    Completed("""{"id":"private-google-run","status":"requires_action","steps":[{"type":"function_call","id":"fn_a","name":"lookup","signature":null,"arguments":{}}]}""")),
+                2 => FixtureHost.Sse(Completed($$"""{"id":"private-google-run","status":"requires_action","steps":[{{string.Join(",", secondRound.Select(step => step.ToJsonString()))}}]}""")),
+                3 => FixtureHost.Sse(Completed($$"""{"id":"private-google-run","status":"completed","steps":[{{string.Join(",", thirdRound.Select(step => step.ToJsonString()))}}],"usage":{{Usage}}}""")),
+                4 => FixtureHost.Sse(Completed(Answer)),
+                _ => throw new InvalidOperationException("Unexpected continuation request.")
+            };
+        }, services => services.AddSingleton(new ToolApprovalSigner("google-interactions-fixture-signing-secret")), liveProviders: true);
+
+        var body = GatewayTests.Request("/api/chat", PricedModel, true);
+        body["tools"] = JsonNode.Parse("""[{"name":"lookup","inputSchema":{"type":"object","properties":{"city":{"type":"string"}}}}]""");
+        var history = body["messages"]!.AsArray();
+        var assistantParts = new JsonArray();
+        // The UI SDK appends all automatic continuations to the same assistant message.
+        var assistant = new JsonObject { ["role"] = "assistant", ["id"] = "answer", ["parts"] = assistantParts };
+
+        await ReadRound("Delft", "Leiden");
+        history.Add(assistant);
+        var withoutApproval = body.DeepClone();
+        var unapprovedCall = withoutApproval["messages"]!.AsArray().Last()!["parts"]!.AsArray()
+            .First(part => (string?)part?["type"] == "dynamic-tool")!.AsObject();
+        unapprovedCall.Remove("approval");
+        using (var rejected = await host.PostAsync("/api/chat", withoutApproval.ToJsonString(), ("x-google-key", "gemini-test")))
+            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        Assert.Single(host.Requests);
+        expected.AddRange(firstRound);
+        expected.AddRange(Steps("""
+            [{"type":"function_result","call_id":"fn_a","name":"lookup","result":[{"type":"text","text":"Result for Delft"}]},
+             {"type":"function_result","call_id":"fn_b","name":"lookup","result":[{"type":"text","text":"Result for Leiden"}]}]
+            """));
+
+        await ReadRound("");
+        expected.AddRange(secondRound);
+        expected.AddRange(Steps("""
+            [{"type":"function_result","call_id":"fn_c","name":"lookup","result":[{"type":"text","text":"No city"}]}]
+            """));
+
+        var finish = await ReadRound();
+        AssertVercelUsage(finish["messageMetadata"]!);
+        expected.AddRange(thirdRound);
+        expected.AddRange(Steps("""[{"type":"user_input","content":[{"type":"text","text":"What else?"}]}]"""));
+        history.Add(JsonNode.Parse("""{"role":"user","id":"follow-up","parts":[{"type":"text","text":"What else?"}]}"""));
+        await ReadRound();
+        Assert.Equal(4, host.Requests.Count);
+
+        async Task<JsonNode> ReadRound(params string[] cities)
+        {
+            using var response = await host.PostAsync("/api/chat", body.ToJsonString(), ("x-google-key", "gemini-test"));
+            var wire = await GatewayTests.Success(response);
+            Assert.DoesNotContain("private-google-run", wire);
+            var frames = Frames(wire);
+            var finish = Assert.Single(frames, frame => (string?)frame["type"] == "finish");
+            Assert.Equal(cities.Length > 0 ? "tool-calls" : "stop", (string?)finish["finishReason"]);
+            var calls = frames.Where(frame => (string?)frame["type"] == "tool-input-available").ToArray();
+            Assert.Equal(cities.Length, calls.Length);
+            foreach (var frame in frames)
+            {
+                switch ((string?)frame["type"])
+                {
+                    case "start-step": assistantParts.Add(new JsonObject { ["type"] = "step-start" }); break;
+                    case "text-delta": assistantParts.Add(new JsonObject { ["type"] = "text", ["text"] = frame["delta"]!.DeepClone() }); break;
+                    case "reasoning-end" when frame["providerMetadata"] is { } metadata:
+                        assistantParts.Add(new JsonObject { ["type"] = "reasoning", ["text"] = "", ["state"] = "done", ["providerMetadata"] = metadata.DeepClone() });
+                        break;
+                    case "tool-input-available":
+                        var city = cities[Array.IndexOf(calls, frame)];
+                        Assert.Equal(city, (string?)frame["input"]?["city"] ?? "");
+                        var approval = Assert.Single(frames, candidate => (string?)candidate["type"] == "tool-approval-request"
+                            && JsonNode.DeepEquals(candidate["toolCallId"], frame["toolCallId"]));
+                        Assert.StartsWith("v1.", (string?)approval["signature"]);
+                        assistantParts.Add(new JsonObject { ["type"] = "dynamic-tool", ["toolCallId"] = frame["toolCallId"]!.DeepClone(),
+                            ["toolName"] = frame["toolName"]!.DeepClone(), ["input"] = frame["input"]!.DeepClone(),
+                            ["state"] = "output-available", ["output"] = city.Length == 0 ? "No city" : $"Result for {city}",
+                            ["approval"] = new JsonObject { ["id"] = approval["approvalId"]!.DeepClone(), ["approved"] = true,
+                                ["signature"] = approval["signature"]!.DeepClone() } });
+                        break;
+                }
+            }
+            return finish;
+        }
     }
 
     private static async Task<string> Post(FixtureHost host, string route, string model, bool stream, bool includeUsage = false)
