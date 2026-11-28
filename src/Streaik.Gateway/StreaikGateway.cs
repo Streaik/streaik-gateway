@@ -72,7 +72,7 @@ public static partial class StreaikGateway
                     model.Id = $"{id}/{model.Id}";
                     model.OwnedBy ??= id;
                     model.Name ??= model.Id;
-                    model.Pricing ??= GatewayPricing.Rates(id, model.Id);
+                    model.Pricing ??= GatewayPricing.Rates(id, model.Id, model.Type);
                     models.Add(model);
                 }
             }

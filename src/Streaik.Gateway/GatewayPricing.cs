@@ -18,10 +18,13 @@ internal static partial class GatewayPricing
     private static readonly ConcurrentDictionary<string, JsonObject> Catalog = new(StringComparer.Ordinal);
     private static readonly JsonSerializerOptions Json = JsonSerializerOptions.Web;
 
-    public static ModelPricing? Rates(string provider, string model)
+    public static ModelPricing? Rates(string provider, string model, string? modelType = null)
     {
         if (RateCard(provider, model) is not { } price || price["input"] is null || price["output"] is null) return null;
-        return price.Deserialize<ModelPricing>(Json);
+        var rates = price.Deserialize<ModelPricing>(Json);
+        // The catalog's Luna rates are for chat. Decisions charge only for input.
+        return rates is not null && provider == "openai" && modelType == "decision" && (model is "gpt-6-luna" or "openai/gpt-6-luna")
+            ? new ModelPricing { Input = rates.Input, Output = 0 } : rates;
     }
 
     private static JsonObject? RateCard(string provider, string model)

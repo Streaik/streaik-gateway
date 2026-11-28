@@ -73,6 +73,47 @@ public sealed class DecisionsTests
         Assert.Null(result["gateway"]);
     }
 
+    [Theory]
+    [InlineData("""[{"id":"gpt-6-luna","owned_by":"openai","context_window":32000}]""", 2)]
+    [InlineData("""[{"id":"gpt-6-luna","type":"decision","description":"Native Decision"},{"id":"gpt-6-luna","type":"language","description":"Native Language"}]""", 2)]
+    [InlineData("""[{"id":"gpt-6-luna","type":"decision","description":"Native Decision"}]""", 1)]
+    [InlineData("""[{"id":"gpt-6-luna","shutdown_date":"2025-01-01"}]""", 0)]
+    [InlineData("""[{"id":"gpt-6.1-sol"}]""", 0)]
+    public async Task OpenAI_catalog_preserves_or_adds_Luna_decision_only_when_available(string rows, int expected)
+    {
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            Assert.Equal("api.openai.com", request.Host);
+            Assert.Equal("/v1/models", request.Path);
+            Assert.Equal("Bearer fixture", request.Headers["Authorization"]);
+            return FixtureHost.Json($$"""{"data":{{rows}}}""");
+        }, decisions: true);
+
+        using var anonymous = await host.GetAsync("/v1/models");
+        Assert.Empty(JsonNode.Parse(await GatewayTests.Success(anonymous))!["data"]!.AsArray());
+        Assert.Empty(host.Requests);
+
+        using var response = await host.GetAsync("/v1/models", ("X-OpenAI-Key", "fixture"));
+        var advertised = JsonNode.Parse(await GatewayTests.Success(response))!["data"]!.AsArray()
+            .Where(row => (string?)row?["id"] == "openai/gpt-6-luna").ToArray();
+        Assert.Equal(expected, advertised.Length);
+        if (expected == 0) return;
+
+        var decision = Assert.Single(advertised, row => (string?)row?["type"] == "decision")!;
+        Assert.Equal(0.0000001m, (decimal)decision["pricing"]!["input"]!);
+        Assert.Equal(0m, (decimal)decision["pricing"]!["output"]!);
+        if (rows.Contains("Native Decision"))
+            Assert.Equal("Native Decision", (string?)decision["description"]);
+        if (expected == 2)
+        {
+            var language = Assert.Single(advertised, row => (string?)row?["type"] == "language")!;
+            Assert.Equal(0.0000005m, (decimal)language["pricing"]!["output"]!);
+            if (rows.Contains("Native Language"))
+                Assert.Equal("Native Language", (string?)language["description"]);
+        }
+        Assert.Single(host.Requests);
+    }
+
     [Fact]
     public async Task Fireworks_discovers_available_models_without_conflating_chat_with_decisions()
     {
