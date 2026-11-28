@@ -879,7 +879,7 @@ public sealed class HostedToolTests
 
     private static string Result(object item) => JsonSerializer.Serialize(new { id = "resp_test", @object = "response", model = "test", status = "completed", output = new[] { item } });
 
-    private sealed class McpFixture(Action invoked, Func<CancellationToken, Task>? beforeResult = null, Action<HttpRequestMessage>? observe = null) : HttpMessageHandler
+    internal sealed class McpFixture(Action invoked, Func<CancellationToken, Task>? beforeResult = null, Action<HttpRequestMessage>? observe = null) : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {

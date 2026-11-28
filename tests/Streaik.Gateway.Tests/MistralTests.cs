@@ -224,6 +224,78 @@ public sealed class MistralTests
     }
 
     [Fact]
+    public async Task HostedVercelChatPreservesThinkingAndKeepsToolActivityOutOfClientReplay()
+    {
+        var calls = 0;
+        var rounds = 0;
+        await using var host = await FixtureHost.StartAsync(request =>
+        {
+            Assert.Equal("/v1/chat/completions", request.Path);
+            var body = request.Body!;
+            var messages = body["messages"]!.AsArray();
+            Assert.False((bool?)body["parallel_tool_calls"]);
+            var tool = Assert.Single(body["tools"]!.AsArray())!;
+            Assert.Equal("function", (string?)tool["type"]);
+            var name = (string?)tool["function"]!["name"];
+            Assert.StartsWith("streaik_", name);
+            switch (Interlocked.Increment(ref rounds))
+            {
+                case 1:
+                    return FixtureHost.Sse(
+                        """{"id":"cmpl_tool","choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"Look it up"}]}]}}]}""",
+                        $$$$"""{"id":"cmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"Abc123XYZ","type":"function","function":{"name":"{{{{name}}}}","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}""",
+                        "[DONE]");
+                case 2:
+                    var assistant = messages[^2]!;
+                    Assert.Equal("assistant", (string?)assistant["role"]);
+                    Assert.Equal("Look it up", (string?)assistant["content"]![0]!["thinking"]![0]!["text"]);
+                    Assert.Equal("Abc123XYZ", (string?)assistant["tool_calls"]![0]!["id"]);
+                    Assert.Equal("tool", (string?)messages[^1]!["role"]);
+                    Assert.Equal("Abc123XYZ", (string?)messages[^1]!["tool_call_id"]);
+                    Assert.Contains("Found", (string?)messages[^1]!["content"]);
+                    break;
+                case 3:
+                    Assert.DoesNotContain("Abc123XYZ", messages.ToJsonString());
+                    Assert.Equal("Found the answer", (string?)messages[^2]!["content"]![0]!["thinking"]![0]!["text"]);
+                    Assert.Equal("Follow up", (string?)messages[^1]!["content"]);
+                    break;
+                default: throw new InvalidOperationException("Unexpected model round.");
+            }
+            return FixtureHost.Sse(
+                """{"id":"cmpl_reply","choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"Found the answer"}]},{"type":"text","text":"Here it is"}]},"finish_reason":"stop"}]}""",
+                "[DONE]");
+        }, services =>
+        {
+            services.AddStreaikHostedTools();
+            services.AddSingleton(new HostedToolAccess((_, _, _, _) => ValueTask.FromResult<McpEndpointAccess?>(
+                new() { ToolNames = new HashSet<string> { "lookup" }, AllowUnreviewedResults = true }),
+                CreateMcpHandler: _ => new HostedToolTests.McpFixture(() => Interlocked.Increment(ref calls))));
+        }, mistral: true);
+        const string tools = """[{"name":"mcp","inputSchema":{"type":"object","mcp":{"server_label":"inventory","server_url":"https://inventory.example.test/mcp","require_approval":"never"}}}]""";
+        const string user = """{"id":"u","role":"user","parts":[{"type":"text","text":"Lookup"}]}""";
+        using var first = await host.PostAsync("/api/chat", $$"""
+            {"model":"mistral/mistral-large-latest","id":"chat","messages":[{{user}}],"tools":{{tools}}}
+            """, Key);
+        var wire = await GatewayTests.Success(first);
+        var toolInput = GatewayTests.Part(wire, "tool-input-available");
+        Assert.True((bool?)toolInput["providerExecuted"]);
+        Assert.Equal("Abc123XYZ", (string?)GatewayTests.Part(wire, "tool-output-available")["toolCallId"]);
+        Assert.Contains("Here it is", wire);
+        var metadata = GatewayTests.Part(wire, "reasoning-end")["providerMetadata"]!.ToJsonString();
+        var displayName = toolInput["toolName"]!.ToJsonString();
+        using var next = await host.PostAsync("/api/chat", $$"""
+            {"model":"mistral/mistral-large-latest","id":"chat","tools":{{tools}},"messages":[{{user}},
+             {"id":"a","role":"assistant","parts":[
+               {"type":"dynamic-tool","toolName":{{displayName}},"toolCallId":"Abc123XYZ","state":"output-available","input":{},"output":"Found","providerExecuted":true,"toolMetadata":{{toolInput["toolMetadata"]}}},
+               {"type":"reasoning","text":"Found the answer","providerMetadata":{{metadata}}},{"type":"text","text":"Here it is"}]},
+             {"id":"u2","role":"user","parts":[{"type":"text","text":"Follow up"}]}]}
+            """, Key);
+        Assert.Contains("Here it is", await GatewayTests.Success(next));
+        Assert.Equal(3, rounds);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
     public async Task OcrUsesLatestUserAttachmentWithoutFetchingItsUrl()
     {
         const string url = "https://documents.example/report.pdf?sig=one%2Btwo";
