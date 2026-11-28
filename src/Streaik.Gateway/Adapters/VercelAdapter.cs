@@ -84,8 +84,50 @@ internal static partial class VercelAdapter
             return true;
         }
 
+        Streaik.Responses.ResponseRequest HostedChatRound() => new() { Stream = true, ToolChoice = request.ToolChoice switch
+        {
+            null => null,
+            "auto" or "required" or "none" => JsonSerializer.SerializeToElement(request.ToolChoice),
+            var named => JsonSerializer.SerializeToElement(new { type = "function", name = named })
+        } };
+
         IAsyncEnumerable<UIMessagePart> stream;
-        if (hosted is { Length: > 0 } && call.ProviderId == "anthropic" && !call.PreferChatBridge
+        if (hosted is { Length: > 0 } && mistralChat && call.GetChatBridge() is { } mistral)
+        {
+            var initial = MessagesRequestFrom(call, request, viaChat: true, hosted: hosted, hostedReplay: hostedReplay);
+            if (initial.Tools?.Any(tool => GatewayHostedTools.IsReserved(tool.Name)) == true)
+                throw new ContractException("Client function names cannot use the Streaik hosted function prefix.");
+            var choice = request.ToolChoice switch
+            {
+                null => null, "auto" or "none" => new MessageToolChoice { Type = request.ToolChoice },
+                "required" => new MessageToolChoice { Type = "any" }, var name => new MessageToolChoice { Type = "tool", Name = name }
+            };
+            await call.WriteVercelStreamAsync(async write =>
+            {
+                var started = await WriteApprovedActivity(write);
+                IReadOnlyList<MessageStreamPart> events = [];
+                async Task Observe(HostedToolActivity activity)
+                {
+                    if (!started) { await write(new StartStepUIPart()); started = true; }
+                    await write(HostedActivityPart(activity));
+                }
+                // Reuse the Chat Completions dialect for both input and output. Only tool calls
+                // are projected to Responses for dispatch; reasoning stays in the assistant turn.
+                var handled = await GatewayHostedTools.RunAsync(call, HostedChatRound(), hosted, hostedApproval, Observe, readRound: async next =>
+                {
+                    var round = ProtocolAdapters.PrepareHostedCompletionsRound(initial, next, choice);
+                    var native = ChatCompletionsBridge.Request(round, request.MaxOutputTokens, translatePresentation: true, documentUrls: true);
+                    if (request.Reasoning is { } effort) native.ReasoningEffort = new(effort);
+                    native.AdditionalProperties = ApplyNativeOptions(call, request, native, Web);
+                    return await ProtocolAdapters.ReadHostedMessageUpdatesAsync(call,
+                        ChatCompletionsBridge.Updates(mistral.StreamChatAsync(native, call.Headers, call.Ct), preserveNativeFields: true, translatePresentation: true),
+                        captureChat: parts => events = parts);
+                });
+                return WithApprovals(HostedMessageParts(call, events, [], handled.Approval, started));
+            });
+            return;
+        }
+        else if (hosted is { Length: > 0 } && call.ProviderId == "anthropic" && !call.PreferChatBridge
             && !nativeResponses && call.Get<IMessagesProvider>() is { } anthropic)
         {
             var native = MessagesRequestFrom(call, request, hosted: hosted, hostedReplay: hostedReplay);
@@ -100,12 +142,7 @@ internal static partial class VercelAdapter
             var tools = MessagesMcp.WireTools(native).ToArray();
             var history = native.Messages;
             var system = native.System;
-            var round = new Streaik.Responses.ResponseRequest { Stream = true, ToolChoice = request.ToolChoice switch
-            {
-                null => null,
-                "auto" or "required" or "none" => JsonSerializer.SerializeToElement(request.ToolChoice),
-                var named => JsonSerializer.SerializeToElement(new { type = "function", name = named })
-            } };
+            var round = HostedChatRound();
             await call.WriteVercelStreamAsync(async write =>
             {
                 var started = false;
@@ -131,7 +168,6 @@ internal static partial class VercelAdapter
         else if (hosted is { Length: > 0 })
         {
             var native = await ResponseRequestFromAsync(call, request, hosted, providerMcp, hostedReplay);
-            if (mistralChat) native.Include = null; // Chat Completions does not accept Responses' encrypted-reasoning include.
             if (native.AdditionalProperties?.ContainsKey(GatewayContainerArtifacts.ReplayKey) == true)
                 throw new ContractException("Hosted tools cannot be combined with container artifact continuation.", 422);
             await call.WriteVercelStreamAsync(async write =>
@@ -143,8 +179,7 @@ internal static partial class VercelAdapter
                     await write(HostedActivityPart(activity));
                 }
                 started = await WriteApprovedActivity(write);
-                var handled = await GatewayHostedTools.RunAsync(call, native, hosted, hostedApproval, Observe,
-                    readRound: mistralChat ? next => GatewayHostedTools.ReadRoundAsync(call, next, preferChat: true) : null);
+                var handled = await GatewayHostedTools.RunAsync(call, native, hosted, hostedApproval, Observe);
                 return WithApprovals(ResponseParts(call, GatewayHostedTools.Events(handled.Events, call.Ct), new GatewayContainerArtifacts.Turn(call),
                     native.Include?.Contains(EncryptedReasoningInclude, StringComparer.Ordinal) == true, ConvertReview(native), handled.Approval, started));
             });

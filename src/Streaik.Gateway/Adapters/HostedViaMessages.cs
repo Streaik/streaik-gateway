@@ -31,8 +31,8 @@ internal static partial class ProtocolAdapters
             }
     }
 
-    internal static void PrepareHostedChatRound(MessagesRequest native, IReadOnlyList<MessageParam> initial,
-        MessagesContent? system, IEnumerable<JsonElement> tools, ResponseRequest round)
+    private static MessagesRequest HostedChatHistory(MessagesRequest native, IReadOnlyList<MessageParam> initial,
+        MessagesContent? system, ResponseRequest round)
     {
         var history = new MessagesHistory();
         foreach (var message in initial)
@@ -44,7 +44,28 @@ internal static partial class ProtocolAdapters
         foreach (var block in system?.Blocks ?? []) history.Add("system", block);
         history.Text("system", round.Instructions);
         AddHostedMessageHistory(history, round.Input?.Items ?? []);
-        var request = history.Build(native.Model, native.MaxTokens, null, null, stream: true);
+        return history.Build(native.Model, native.MaxTokens, native.Temperature, native.TopP, stream: true);
+    }
+
+    internal static MessagesRequest PrepareHostedCompletionsRound(MessagesRequest initial, ResponseRequest round,
+        MessageToolChoice? choice)
+    {
+        var request = HostedChatHistory(initial, initial.Messages, initial.System, round);
+        if (choice?.Type != "none")
+        {
+            request.Tools = [.. initial.Tools ?? [], .. (round.Tools ?? []).Select(MessageFunction)];
+            if (request.Tools.Count > 0) request.ToolChoice = new()
+            {
+                Type = choice?.Type ?? "auto", Name = choice?.Name, DisableParallelToolUse = true
+            };
+        }
+        return request;
+    }
+
+    internal static void PrepareHostedChatRound(MessagesRequest native, IReadOnlyList<MessageParam> initial,
+        MessagesContent? system, IEnumerable<JsonElement> tools, ResponseRequest round)
+    {
+        var request = HostedChatHistory(native, initial, system, round);
         native.Messages = request.Messages;
         native.System = request.System;
         if (native.ToolChoice?.Type != "none")
@@ -99,6 +120,12 @@ internal static partial class ProtocolAdapters
                 NativeAssistantTurn: new NativeAssistantTurn(message.Content.ToList()));
         }
 
+        return await ReadHostedMessageUpdatesAsync(call, provider.StreamMessageAsync(request, headers, call.Ct), nativeMcp, captureChat, earlierMcp);
+    }
+
+    internal static async Task<GatewayHostedTools.Round> ReadHostedMessageUpdatesAsync(GatewayCall call, IAsyncEnumerable<MessageStreamPart> source,
+        bool nativeMcp = false, Action<IReadOnlyList<MessageStreamPart>>? captureChat = null, IReadOnlyList<ResponseInputItem>? earlierMcp = null)
+    {
         var events = new List<MessageStreamPart>();
         var blocks = new SortedDictionary<int, (MessageContentBlock Block, StringBuilder Arguments)>();
         var id = "";
@@ -106,7 +133,7 @@ internal static partial class ProtocolAdapters
         async IAsyncEnumerable<MessageStreamPart> Read()
         {
             var count = 0;
-            await foreach (var part in provider.StreamMessageAsync(request, headers, call.Ct).WithCancellation(call.Ct))
+            await foreach (var part in source.WithCancellation(call.Ct))
             {
                 if (++count > 16384) throw new ContractException("The hosted response exceeded the stream event limit.", 502);
                 if (captureChat is not null) events.Add(part);

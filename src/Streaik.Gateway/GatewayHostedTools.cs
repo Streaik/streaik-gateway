@@ -261,11 +261,11 @@ internal static class GatewayHostedTools
         return round with { Events = events };
     }
 
-    internal static async Task<Round> ReadRoundAsync(GatewayCall call, ResponseRequest request, bool preferChat = false)
+    private static async Task<Round> ReadRoundAsync(GatewayCall call, ResponseRequest request)
     {
-        if (request.Stream != true) return new(await ProtocolAdapters.HostedResponseRoundAsync(call, request, preferChat), []);
+        if (request.Stream != true) return new(await ProtocolAdapters.HostedResponseRoundAsync(call, request), []);
         List<ResponseStreamPart> events = [];
-        await foreach (var part in ProtocolAdapters.HostedResponseStreamAsync(call, request, preferChat).WithCancellation(call.Ct))
+        await foreach (var part in ProtocolAdapters.HostedResponseStreamAsync(call, request).WithCancellation(call.Ct))
         {
             if (events.Count == 16384) throw new ContractException("The hosted response exceeded the stream event limit.", 502);
             events.Add(part);
