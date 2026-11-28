@@ -245,6 +245,35 @@ public sealed class ArliAICartesiaCelerisTests
     }
 
     [Fact]
+    public async Task Cartesia_sonic_speech_is_tagged_and_uses_a_TTS_only_browser_grant()
+    {
+        await using var host = await FixtureHost.StartAsync(request => request.Path switch
+        {
+            "/voices?limit=100" => FixtureHost.Json("""{"data":[{"id":"voice-1"}]}"""),
+            "/v1/agents?limit=100" => FixtureHost.Json("""{"data":[]}"""),
+            "/access-token" => FixtureHost.Json("""{"token":"short-lived"}"""),
+            _ => throw new InvalidOperationException(request.Path)
+        }, arliAICartesiaCeleris: true);
+        const string id = "cartesia/tts/sonic-3.6/voice-1";
+        using var catalog = await host.GetAsync("/v1/models", Cartesia);
+        var model = Assert.Single((await Json(catalog))["data"]!.AsArray(), x => (string?)x?["id"] == id);
+        Assert.Equal("speech", (string?)model?["type"]);
+        Assert.Contains(model!["tags"]!.AsArray(), tag => (string?)tag == "realtime");
+
+        using var response = await host.PostAsync($"/api/realtime/token/{id}", "{}", Cartesia);
+        var body = await Json(response);
+        Assert.Equal("short-lived", (string?)body["token"]);
+        Assert.Equal("wss://api.cartesia.ai/tts/websocket?cartesia_version=2026-08-14", (string?)body["url"]);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        var request = host.Requests.Last();
+        Assert.Equal("/access-token", request.Path);
+        Assert.Equal("Bearer fixture-cartesia", request.Headers["Authorization"]);
+        Assert.True((bool)request.Body!["grants"]!["tts"]!);
+        Assert.False((bool)request.Body!["grants"]!["stt"]!);
+        Assert.False((bool)request.Body!["grants"]!["agent"]!);
+    }
+
+    [Fact]
     public async Task Cartesia_uses_existing_Chat_Completions_audio_fields()
     {
         await using var host = await FixtureHost.StartAsync(request => request.Path switch

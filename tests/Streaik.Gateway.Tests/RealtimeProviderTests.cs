@@ -57,17 +57,19 @@ public sealed class RealtimeProviderTests
             """), googleRequest["bidiGenerateContentSetup"]));
     }
 
-    [Fact]
-    public async Task Deepgram_browser_lease_uses_the_scoped_grant_and_never_returns_the_api_key()
+    [Theory]
+    [InlineData("nova-3", "/v1/listen")]
+    [InlineData("aura-2-asteria-en", "/v1/speak")]
+    public async Task Deepgram_browser_lease_uses_the_scoped_grant_and_never_returns_the_api_key(string model, string socketPath)
     {
         var token = "temporary";
         await using var host = await FixtureHost.StartAsync(_ => FixtureHost.Json(new JsonObject { ["access_token"] = token, ["expires_in"] = 30 }.ToJsonString()), media: true);
-        const string endpoint = "/api/realtime/token/deepgram/nova-3";
+        var endpoint = $"/api/realtime/token/deepgram/{model}";
         using var response = await host.PostAsync(endpoint, "{}", ("X-Deepgram-Key", "fixture-deepgram"), ("X-OpenAI-Key", "not-forwarded"));
         var body = JsonNode.Parse(await GatewayTests.Success(response))!;
         Assert.True(response.Headers.CacheControl?.NoStore);
         Assert.Equal("temporary", (string?)body["token"]);
-        Assert.Equal("wss://api.deepgram.com/v1/listen?model=nova-3", (string?)body["url"]);
+        Assert.Equal($"wss://api.deepgram.com{socketPath}?model={model}", (string?)body["url"]);
         Assert.True((long?)body["expiresAt"] > DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         var upstream = Assert.Single(host.Requests);
         Assert.Equal("/v1/auth/grant", upstream.Path);
@@ -78,6 +80,12 @@ public sealed class RealtimeProviderTests
         using var echoedCredential = await host.PostAsync(endpoint, "{}", ("X-Deepgram-Key", token));
         Assert.False(echoedCredential.IsSuccessStatusCode);
         Assert.DoesNotContain(token, await echoedCredential.Content.ReadAsStringAsync());
+
+        using var catalog = await host.GetAsync("/v1/models", ("X-Deepgram-Key", "fixture-deepgram"));
+        var models = JsonNode.Parse(await GatewayTests.Success(catalog))!["data"]!.AsArray();
+        var speech = Assert.Single(models, entry => (string?)entry?["id"] == "deepgram/aura-2-asteria-en");
+        Assert.Equal("speech", (string?)speech?["type"]);
+        Assert.Contains(speech!["tags"]!.AsArray(), tag => (string?)tag == "realtime");
     }
 
     [Theory]

@@ -387,6 +387,9 @@ public sealed class MistralTests
         Assert.Contains("mistral/voxtral-mini-tts-3-0/alice", modelBody);
         Assert.Contains("mistral/voxtral-mini-transcribe-realtime-3-0", modelBody);
         Assert.DoesNotContain("agent/old", modelBody);
+        var speech = Assert.Single(JsonNode.Parse(modelBody)!["data"]!.AsArray(), x => (string?)x?["id"] == "mistral/voxtral-mini-tts-3-0");
+        Assert.Equal("speech", (string?)speech?["type"]);
+        Assert.Contains(speech!["tags"]!.AsArray(), tag => (string?)tag == "realtime");
 
         const string endpoint = "/api/realtime/token/mistral/voxtral-mini-transcribe-realtime-3-0";
         using var tokenResponse = await host.PostAsync(endpoint, """{"sessionConfig":{"providerOptions":{"mistral":{"ttl_seconds":60}}}}""", Key);
@@ -398,7 +401,9 @@ public sealed class MistralTests
         Assert.Equal(60, (int?)host.Requests.Last().Body!["ttl_seconds"]);
 
         using var voice = await host.PostAsync("/api/realtime/token/mistral/voxtral-mini-tts-3-0", "{}", Key);
-        Assert.Contains("/v1/audio/speech/realtime?model=", (string?)(await Json(voice))["url"]);
+        Assert.Equal("wss://api.mistral.ai/v1/audio/speech/realtime?model=voxtral-mini-tts-3-0", (string?)(await Json(voice))["url"]);
+        Assert.True(voice.Headers.CacheControl?.NoStore);
+        Assert.Equal("voxtral-mini-tts-3-0", (string?)host.Requests.Last().Body!["model"]);
         expires = DateTimeOffset.UtcNow.AddMinutes(-1);
         using var expired = await host.PostAsync(endpoint, "{}", Key);
         Assert.Equal(HttpStatusCode.BadGateway, expired.StatusCode);
