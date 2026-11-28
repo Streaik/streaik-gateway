@@ -153,7 +153,7 @@ internal static class ImageAdapters
 
     private static Task<OpenAIImagesResponse> RunAsync(GatewayCall call, IImageProvider provider, string prompt, OpenAIImageReference[] files, JsonObject options)
     {
-        if (call.ProviderId != "ideogram" && string.IsNullOrWhiteSpace(prompt)) throw MissingPrompt();
+        if (call.ProviderId is not ("ideogram" or "vanceai") && string.IsNullOrWhiteSpace(prompt)) throw MissingPrompt();
         var action = options["action"] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
         if (action is not (null or "auto" or "edit" or "generate") || action == "edit" && files.Length == 0 || action == "generate" && files.Length > 0)
             throw new ContractException("Image action does not match the input images.", 422);

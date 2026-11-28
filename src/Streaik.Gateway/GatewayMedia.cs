@@ -88,7 +88,7 @@ public static partial class StreaikGateway
         if (request.Images is not { Length: > 0 } && request.ImageFiles is not { Length: > 0 })
             throw new ContractException("An edit requires at least one image.");
         var call = new GatewayCall(context, request.Model);
-        if (call.ProviderId != "ideogram") Need(request.Prompt, "prompt");
+        if (call.ProviderId is not ("ideogram" or "vanceai")) Need(request.Prompt, "prompt");
         request.Model = call.NativeModel;
         if (request.Stream == true && call.Get<IStreamingImagesProvider>() is { } native)
         { await WriteImageStreamAsync(call, native.StreamImagesAsync(request, call.Headers, call.Ct)); return; }
@@ -138,7 +138,7 @@ public static partial class StreaikGateway
     {
         var request = await ReadAsync<ImageRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
-        if (call.ProviderId is not ("ideogram" or "segmind")
+        if (call.ProviderId is not ("ideogram" or "segmind" or "vanceai")
             && !(call.ProviderId == "picsart" && call.NativeModel.StartsWith("logo/", StringComparison.Ordinal))) Need(request.Prompt, "prompt");
         var provider = call.Require<IImageProvider>();
         var files = request.Files?.Select(ImageReference).ToArray();
@@ -224,7 +224,7 @@ public static partial class StreaikGateway
         var request = await ReadAsync<VideoRequest>(context, Web);
         var call = new GatewayCall(context, request.Model);
         // AtlasCloud accepts image-only inputs. Bria and Decart validate workflow-specific prompts; FLUX editing takes a video or draft cache.
-        if (call.ProviderId is not ("atlascloud" or "bria" or "decart" or "runway") && (call.ProviderId != "blackforestlabs"
+        if (call.ProviderId is not ("atlascloud" or "bria" or "decart" or "runway" or "vanceai") && (call.ProviderId != "blackforestlabs"
             || call.NativeModel.ToLowerInvariant() is not ("flux-3-video-draft-enhance" or "flux-tools/video-upscale-v1")))
             Need(request.Prompt, "prompt");
         var provider = call.Require<IVideoProvider>();
