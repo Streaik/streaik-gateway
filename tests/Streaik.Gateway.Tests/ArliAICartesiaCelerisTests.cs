@@ -35,7 +35,8 @@ public sealed class ArliAICartesiaCelerisTests
         Check("celeris/celeris-1", "language");
         Assert.Equal("Native Celeris", (string?)models["celeris/celeris-1"]["name"]);
         Check("celeris/celeris-1.1-decision", "decision");
-        Check("cartesia/tts/sonic-3.6/voice-2", "speech", "voice");
+        Check("cartesia/tts/sonic-3.6/voice-2", "speech", "realtime", "voice");
+        Check("cartesia/tts/sonic-3.5/voice-2", "speech", "voice");
         Check("cartesia/agents/agent-1", "audio", "agent", "realtime");
         Check("cartesia/transcription/realtime/auto/ink-2", "transcription", "realtime");
         Assert.All(host.Requests, request => Assert.Equal("Bearer fixture-" + (request.Host switch
