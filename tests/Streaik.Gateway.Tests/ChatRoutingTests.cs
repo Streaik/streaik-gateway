@@ -53,15 +53,17 @@ public sealed class ChatRoutingTests
     public async Task Compatible_provider_lists_models_and_answers_every_route(string provider, string upstreamHost, string prefix)
     {
         await using var host = await FixtureHost.StartAsync(request => request.Path.EndsWith("/models", StringComparison.Ordinal)
-            ? FixtureHost.Json(provider == "together" ? """[{"id":"vendor/Model","type":"chat"},{"id":"embedding","type":"embedding"}]"""
-                : """{"data":[{"id":"vendor/Model"}]}""")
+            ? FixtureHost.Json(provider == "together" ? """[{"id":"vendor/Model","created_at":1700000000,"type":"chat"},{"id":"embedding","type":"embedding"}]"""
+                : """{"data":[{"id":"vendor/Model","created":1700000000}]}""")
             : FixtureHost.Reply(request with { Path = Chat }), compatibleChat: true);
         var key = ($"X-{provider}-Key", "provider-key");
         var model = $"{provider}/vendor/Model";
         using var list = await host.GetAsync("/v1/models", key);
         Assert.True(list.IsSuccessStatusCode);
         var models = JsonNode.Parse(await list.Content.ReadAsStringAsync())!["data"]!.AsArray();
-        Assert.Equal("language", (string?)Assert.Single(models, item => (string?)item?["id"] == model)!["type"]);
+        var chat = Assert.Single(models, item => (string?)item?["id"] == model)!;
+        Assert.Equal("language", (string?)chat["type"]);
+        Assert.Equal(1700000000L, (long)chat["created"]!);
         if (provider == "together")
             Assert.Equal("embedding", (string?)Assert.Single(models, item => (string?)item?["id"] == "together/embedding")!["type"]);
         else Assert.Single(models);

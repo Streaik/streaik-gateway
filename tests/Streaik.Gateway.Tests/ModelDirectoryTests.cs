@@ -12,7 +12,7 @@ public sealed class ModelDirectoryTests
             ? FixtureHost.Json("""
                 {"data":[
                   {"id":"org/vision-reader","architecture":{"input_modalities":["text","image"],"output_modalities":["text"]}},
-                  {"id":"org/multimodal","tags":["agent","voice","translate","realtime","tools"],"architecture":{"input_modalities":["text"],"output_modalities":["text","image"]},"top_provider":{"max_completion_tokens":2048}},
+                  {"id":"org/multimodal","created":1700000000,"tags":["agent","voice","translate","realtime","tools"],"architecture":{"input_modalities":["text"],"output_modalities":["text","image"]},"top_provider":{"max_completion_tokens":2048}},
                   {"id":"org/speech-to-text","architecture":{"input_modalities":["audio"],"output_modalities":["text"]}}
                 ]}
                 """) : new HttpResponseMessage(HttpStatusCode.NotFound), media: true);
@@ -25,6 +25,7 @@ public sealed class ModelDirectoryTests
         Assert.Equal(new[] { "image", "language" }, multimodal.Select(item => (string)item["type"]!).Order());
         Assert.All(multimodal, item =>
         {
+            Assert.Equal(1700000000L, (long)item["created"]!);
             Assert.Equal(2048, (int)item["max_tokens"]!);
             Assert.Null(item["tags"]);
         });
@@ -111,8 +112,8 @@ public sealed class ModelDirectoryTests
     {
         await using var host = await FixtureHost.StartAsync(request => request.Host == "api.anthropic.com"
             ? FixtureHost.Json("""
-                {"data":[{"id":"claude-typed","tags":["real-time","voice","agent","translate","provider-tag"]},
-                  {"id":"claude-untyped","description":"Model description","context_window":16384,"tags":[42]}],"has_more":false}
+                {"data":[{"id":"claude-typed","created_at":"2025-01-01T01:00:00+01:00","tags":["real-time","voice","agent","translate","provider-tag"]},
+                  {"id":"claude-untyped","created_at":"not a date","description":"Model description","context_window":16384,"tags":[42]}],"has_more":false}
                 """) : new HttpResponseMessage(HttpStatusCode.NotFound));
 
         using var response = await host.GetAsync("/v1/models", ("X-Anthropic-Key", "fixture"));
@@ -124,6 +125,8 @@ public sealed class ModelDirectoryTests
             Assert.Equal("language", (string?)model["type"]);
             Assert.Null(model["tags"]);
         });
+        Assert.Equal(1735689600L, (long)models["anthropic/claude-typed"]["created"]!);
+        Assert.Null(models["anthropic/claude-untyped"]["created"]);
         Assert.Equal("Model description", (string?)models["anthropic/claude-untyped"]["description"]);
         Assert.Equal(16384, (int?)models["anthropic/claude-untyped"]["context_window"]);
     }
